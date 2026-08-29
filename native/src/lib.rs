@@ -1,5 +1,9 @@
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyByteArray;
+use pyo3::types::{PyByteArray, PyBytes};
+
+mod wayland_capture;
+use wayland_capture::WaylandCapture;
 
 fn crop_bgra_impl(
     frame: &[u8],
@@ -58,15 +62,25 @@ fn crop_bgra_impl(
 #[pyfunction]
 fn crop_bgra<'py>(
     py: Python<'py>,
-    frame: &[u8],
+    frame: &Bound<'py, PyAny>,
     full_width: usize,
     full_height: usize,
     rect: (i64, i64, i64, i64),
 ) -> PyResult<(Bound<'py, PyByteArray>, usize, usize)> {
+    let slice: &[u8] = if let Ok(bytes) = frame.cast::<PyBytes>() {
+        bytes.as_bytes()
+    } else if let Ok(bytearray) = frame.cast::<PyByteArray>() {
+        unsafe { bytearray.as_bytes() }
+    } else {
+        return Err(PyValueError::new_err(
+            "frame must be a bytes or bytearray object",
+        ));
+    };
+
     let (left, top, width, height) = rect;
     let (cropped, width, height) =
-        crop_bgra_impl(frame, full_width, full_height, left, top, width, height)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        crop_bgra_impl(slice, full_width, full_height, left, top, width, height)
+            .map_err(PyValueError::new_err)?;
 
     Ok((PyByteArray::new(py, &cropped), width, height))
 }
@@ -79,6 +93,7 @@ fn backend_name() -> &'static str {
 
 #[pymodule]
 fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<WaylandCapture>()?;
     module.add_function(wrap_pyfunction!(backend_name, module)?)?;
     module.add_function(wrap_pyfunction!(crop_bgra, module)?)?;
     Ok(())

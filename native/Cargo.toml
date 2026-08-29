@@ -9,4 +9,10 @@ name = "meikipop_native"
 crate-type = ["cdylib"]
 
 [dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
+async-io = "2.6"
+gstreamer = "0.24"
+gstreamer-app = "0.24"
+gstreamer-video = "0.24"
 pyo3 = { version = "0.29", features = ["abi3-py310"] }
+zbus = "=5.13.2"

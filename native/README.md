@@ -1,9 +1,7 @@
-# MeikiPop native experiments
+# MeikiPop native extension
 
-This isolated crate is a test bed for gradually moving self-contained MeikiPop
-code to Rust through [PyO3](https://pyo3.rs/) and
-[Maturin](https://www.maturin.rs/). It does not change the existing Python
-package or application behavior.
+This crate contains MeikiPop components that are gradually moving to Rust
+through [PyO3](https://pyo3.rs/) and [Maturin](https://www.maturin.rs/).
 
 Build a wheel from the repository root:
 
@@ -20,6 +18,24 @@ source .venv/bin/activate
 maturin develop --manifest-path native/Cargo.toml
 python -c 'import meikipop_native; print(meikipop_native.backend_name())'
 ```
+
+On Wayland, MeikiPop uses the native Rust ScreenCast backend:
+
+```bash
+meikipop
+```
+
+The conservative Rust backend currently preserves the existing behavior:
+
+- one monitor source selected through the XDG ScreenCast portal;
+- one PipeWire stream consumed through GStreamer;
+- the most recent frame retained as tightly packed BGRA/BGRx;
+- the existing MSS-shaped Python adapter and crop coordinates.
+
+Portal stream position and logical-size metadata are retained by the native
+capture object, but are not applied yet. This leaves room for a later,
+separately tested multi-monitor and fractional-scaling implementation without
+changing this first parity pass.
 
 The first migrated operation is the Wayland screenshot crop. It accepts a
 tightly packed BGRA frame and a `(left, top, width, height)` rectangle:
@@ -39,5 +55,6 @@ Useful Rust checks:
 
 ```bash
 cargo fmt --manifest-path native/Cargo.toml --check
-cargo clippy --manifest-path native/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path native/Cargo.toml --locked
+cargo clippy --manifest-path native/Cargo.toml --all-targets --locked -- -D warnings
 ```

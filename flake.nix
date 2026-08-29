@@ -52,7 +52,6 @@
               pillow
               platformdirs
               protobuf
-              pygobject3
               pynput
               pyqt6
               requests
@@ -77,12 +76,15 @@
               meikipopDev
 
               # Wayland ScreenCast portal / PipeWire support.
-              pkgs.gobject-introspection
               pkgs.gst_all_1.gstreamer
               pkgs.gst_all_1.gst-plugins-base
               pkgs.gst_all_1.gst-plugins-good
               pkgs.gst_all_1.gst-plugins-bad
               pkgs.pipewire
+
+              # Headers and pkg-config metadata used by gstreamer-rs.
+              pkgs.gst_all_1.gstreamer.dev
+              pkgs.gst_all_1.gst-plugins-base.dev
 
               # Native-extension and general development tools.
               pkgs.cargo
@@ -103,7 +105,7 @@
               echo "meikipop development shell"
               echo "  Run: meikipop"
               echo "  Source: $PWD/src"
-              echo "  PyO3 test: maturin build --manifest-path native/Cargo.toml"
+              echo "  Native install: maturin develop --manifest-path native/Cargo.toml"
             '';
           };
         }
