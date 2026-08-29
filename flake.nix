@@ -65,7 +65,7 @@
           );
 
           meikipopDev = pkgs.writeShellScriptBin "meikipop" ''
-            exec ${pythonEnv}/bin/python -m meikipop.main "$@"
+            exec python -m meikipop.main "$@"
           '';
 
           pipewireGstPlugin = "${pkgs.lib.getLib pkgs.pipewire}/lib/gstreamer-1.0";
@@ -85,8 +85,15 @@
               pkgs.pipewire
 
               # Native-extension and general development tools.
+              pkgs.cargo
+              pkgs.clippy
+              pkgs.maturin
               pkgs.pkg-config
+              pkgs.rust-analyzer
+              pkgs.rustc
+              pkgs.rustfmt
               pkgs.ruff
+              pkgs.uv
             ];
 
             shellHook = ''
@@ -96,6 +103,7 @@
               echo "meikipop development shell"
               echo "  Run: meikipop"
               echo "  Source: $PWD/src"
+              echo "  PyO3 test: maturin build --manifest-path native/Cargo.toml"
             '';
           };
         }

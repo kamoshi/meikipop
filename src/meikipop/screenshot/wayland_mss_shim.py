@@ -16,6 +16,7 @@ import mss as real_mss
 from mss.exception import ScreenShotError
 from mss.screenshot import ScreenShot, Size
 from mss.models import Monitor
+from meikipop_native import crop_bgra
 
 logger = logging.getLogger(__name__)  # todo add proper info and debug logs
 
@@ -343,29 +344,12 @@ class MSSWaylandShim:
             crop_width = sct_params['width']
             crop_height = sct_params['height']
 
-            crop_right = crop_left + crop_width
-            crop_bottom = crop_top + crop_height
-
-            crop_left = max(0, min(crop_left, full_width - 1))
-            crop_top = max(0, min(crop_top, full_height - 1))
-            crop_right = max(crop_left + 1, min(crop_right, full_width))
-            crop_bottom = max(crop_top + 1, min(crop_bottom, full_height))
-
-            if crop_right > crop_left and crop_bottom > crop_top:
-                final_crop_width = crop_right - crop_left
-                final_crop_height = crop_bottom - crop_top
-                stride = full_width * 4
-
-                cropped_data = bytearray(final_crop_width * final_crop_height * 4)
-
-                for y in range(final_crop_height):
-                    src_y = crop_top + y
-                    src_start = src_y * stride + crop_left * 4
-                    src_end = src_start + final_crop_width * 4
-                    dst_start = y * final_crop_width * 4
-                    cropped_data[dst_start:dst_start + (src_end - src_start)] = bgra_data[src_start:src_end]
-
-                return cropped_data, final_crop_width, final_crop_height
+            return crop_bgra(
+                bgra_data,
+                full_width,
+                full_height,
+                (crop_left, crop_top, crop_width, crop_height),
+            )
 
         return bgra_data, full_width, full_height
 

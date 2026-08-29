@@ -1,0 +1,12 @@
+[package]
+name = "meikipop-native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "meikipop_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["abi3-py310"] }
