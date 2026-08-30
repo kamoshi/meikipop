@@ -1,4 +1,4 @@
-use crate::ocr::interface::{paragraph_from_python, BoundingBox, Paragraph};
+use crate::ocr::interface::{BoundingBox, Paragraph, paragraph_from_python};
 use pyo3::prelude::*;
 
 pub const FURIGANA_VERTICAL_WIDTH_THRESHOLD: f64 = 0.65;

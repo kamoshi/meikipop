@@ -87,11 +87,7 @@ impl Form {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
         let hash = hasher.finish() as isize;
-        if hash == -1 {
-            -2
-        } else {
-            hash
-        }
+        if hash == -1 { -2 } else { hash }
     }
 
     fn __eq__(&self, other: &Self) -> bool {
@@ -355,13 +351,15 @@ mod tests {
             }]"#,
         ));
 
-        assert!(deconjugator
-            .deconjugate("読んだ")
-            .contains(&Form::with_details(
-                "読む",
-                vec!["past".into()],
-                vec!["v5m".into()],
-            )));
+        assert!(
+            deconjugator
+                .deconjugate("読んだ")
+                .contains(&Form::with_details(
+                    "読む",
+                    vec!["past".into()],
+                    vec!["v5m".into()],
+                ))
+        );
     }
 
     #[test]
