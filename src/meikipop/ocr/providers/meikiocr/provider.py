@@ -2,11 +2,10 @@ import logging
 import re
 from typing import List, Optional
 
-import numpy as np
 from PIL import Image
 
 # Import the MeikiOCR library
-from meikiocr import MeikiOCR
+from meikipop_native.ocr.providers.meikiocr import MeikiOCR
 
 # Import the "contract" classes from your application's interface
 from meikipop.ocr.interface import BoundingBox, OcrProvider, Paragraph, Word
@@ -52,8 +51,8 @@ class MeikiOcrProvider(OcrProvider):
             return None
 
         try:
-            image_np_rgb = np.array(image.convert("RGB"))
-            img_height, img_width = image_np_rgb.shape[:2]
+            image_rgb = image.convert("RGB")
+            img_width, img_height = image_rgb.size
 
             if img_width == 0 or img_height == 0:
                 logger.error("invalid image dimensions received.")
@@ -61,7 +60,9 @@ class MeikiOcrProvider(OcrProvider):
 
             # --- 1. Run the entire OCR pipeline with a single library call ---
             ocr_results = self.ocr_client.run_ocr(
-                image_np_rgb,
+                image_rgb.tobytes(),
+                img_width,
+                img_height,
                 det_threshold=DET_CONFIDENCE_THRESHOLD,
                 rec_threshold=REC_CONFIDENCE_THRESHOLD,
                 punct_conf_factor=0.2

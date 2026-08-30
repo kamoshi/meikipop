@@ -18,36 +18,10 @@
           pkgs = import nixpkgs { inherit system; };
           python = pkgs.python312;
 
-          # meikiocr is the only project dependency missing from Nixpkgs.
-          meikiocr = python.pkgs.buildPythonPackage rec {
-            pname = "meikiocr";
-            version = "0.3.4";
-            pyproject = true;
-
-            src = pkgs.fetchPypi {
-              inherit pname version;
-              hash = "sha256-dt4dJsLE3BQTIr59DlpUr5jgUsqM/Lrv0okfNy4TRPE=";
-            };
-
-            build-system = [ python.pkgs.setuptools ];
-            dependencies = with python.pkgs; [
-              huggingface-hub
-              numpy
-              onnxruntime
-              opencv4
-            ];
-
-            # Nixpkgs' opencv4 provides the cv2 module. Only the Python
-            # distribution name differs from the PyPI headless wheel.
-            pythonRemoveDeps = [ "opencv-python-headless" ];
-            pythonImportsCheck = [ "meikiocr" ];
-          };
-
           pythonEnv = python.withPackages (
             ps: with ps; [
               betterproto
               lxml
-              meikiocr
               mss
               pillow
               platformdirs
@@ -89,7 +63,11 @@
               # Native-extension and general development tools.
               pkgs.cargo
               pkgs.clippy
+              pkgs.llvmPackages.clang
+              pkgs.llvmPackages.libclang
               pkgs.maturin
+              pkgs.opencv
+              pkgs.openssl.dev
               pkgs.pkg-config
               pkgs.rust-analyzer
               pkgs.rustc
@@ -101,6 +79,7 @@
             shellHook = ''
               export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
               export GST_PLUGIN_SYSTEM_PATH_1_0="${pipewireGstPlugin}''${GST_PLUGIN_SYSTEM_PATH_1_0:+:$GST_PLUGIN_SYSTEM_PATH_1_0}"
+              export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
 
               echo "meikipop development shell"
               echo "  Run: meikipop"
