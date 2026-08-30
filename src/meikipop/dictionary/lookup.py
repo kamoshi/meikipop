@@ -1,11 +1,9 @@
 import logging
 import threading
-from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, List
 
 from meikipop.config.config import config, MAX_DICT_ENTRIES, DICT_PATH
-from meikipop.dictionary.customdict import Dictionary
 from meikipop_native.dictionary.lookup import LookupEngine
 
 logger = logging.getLogger(__name__)
@@ -38,23 +36,21 @@ class Lookup(threading.Thread):
         self.popup_window = popup_window
         self.last_hit_result = None
 
-        dictionary = Dictionary()
-        self.lookup_cache: OrderedDict = OrderedDict()
-        self.CACHE_SIZE = 500
-
-        if not dictionary.load_dictionary(DICT_PATH):
-            raise RuntimeError("Failed to load dictionary.")
-        self.lookup_engine = LookupEngine(
-            dictionary.entries,
-            dictionary.lookup_map,
-            dictionary.kanji_entries,
-            dictionary.deconjugator_rules,
+        self.lookup_engine = LookupEngine.open(
+            DICT_PATH,
             MAX_DICT_ENTRIES,
         )
-        dictionary.log_validation(*self.lookup_engine.validate())
+        issues, warnings = self.lookup_engine.validate()
+        for warning in warnings:
+            logger.warning(warning)
+        if issues == 0:
+            logger.info("Dictionary validation passed with no issues.")
+        else:
+            logger.warning(f"Dictionary validation found {issues} issue(s) — "
+                           f"some entries may display incorrectly.")
 
     def clear_cache(self):
-        self.lookup_cache = OrderedDict()
+        self.lookup_engine.clear_cache()
 
     def run(self):
         logger.debug("Lookup thread started.")
@@ -81,24 +77,12 @@ class Lookup(threading.Thread):
             return []
         logger.info(f"Looking up: {lookup_string}")  # keep at info level so people know whats up
 
-        text = self.lookup_engine.prepare_lookup_text(lookup_string, config.max_lookup_length)
-        if not text:
-            return []
-
-        if text in self.lookup_cache:
-            self.lookup_cache.move_to_end(text)
-            return self.lookup_cache[text]
-
-        results = self._do_lookup(text)
-
-        self.lookup_cache[text] = results
-        if len(self.lookup_cache) > self.CACHE_SIZE:
-            self.lookup_cache.popitem(last=False)
-        return results
+        return self._do_lookup(lookup_string)
 
     def _do_lookup(self, text: str) -> List:
         results = []
-        for entry in self.lookup_engine.lookup(text, config.show_kanji):
+        for entry in self.lookup_engine.lookup(
+                text, config.max_lookup_length, config.show_kanji):
             if 'character' in entry:
                 results.append(KanjiEntry(**entry))
             else:

@@ -2,10 +2,13 @@ use crate::dictionary::customdict;
 use crate::dictionary::deconjugator::{Deconjugator, Form};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use serde::Deserialize;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_FREQ: i64 = 999_999;
+pub const CACHE_SIZE: usize = 500;
 pub const JAPANESE_SEPARATORS: &str = concat!(
     "、。「」｛｝（）【】",
     "『』〈〉《》：・／",
@@ -14,31 +17,23 @@ pub const JAPANESE_SEPARATORS: &str = concat!(
 );
 
 /// The typed equivalent of one upstream sense dictionary.
-#[derive(Clone, Debug, PartialEq, Eq, FromPyObject, IntoPyObject)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, IntoPyObject)]
 pub struct Sense {
-    #[pyo3(item)]
     pub glosses: Vec<String>,
-    #[pyo3(item)]
     pub pos: Vec<String>,
-    #[pyo3(item)]
     pub tags: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, FromPyObject)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct KanjiComponent {
-    #[pyo3(item)]
     pub c: String,
-    #[pyo3(item, default)]
     pub m: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, FromPyObject, IntoPyObject)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, IntoPyObject)]
 pub struct KanjiExample {
-    #[pyo3(item)]
     pub w: String,
-    #[pyo3(item)]
     pub r: String,
-    #[pyo3(item)]
     pub m: String,
 }
 
@@ -59,22 +54,18 @@ fn components_to_python<'py>(
     Ok(result.into_any())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, FromPyObject, IntoPyObject)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, IntoPyObject)]
 pub struct KanjiEntry {
-    #[pyo3(item)]
     pub character: String,
-    #[pyo3(item)]
     pub meanings: Vec<String>,
-    #[pyo3(item)]
     pub readings: Vec<String>,
-    #[pyo3(item)]
     #[pyo3(into_py_with = components_to_python)]
     pub components: Vec<KanjiComponent>,
-    #[pyo3(item)]
     pub examples: Vec<KanjiExample>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(from = "RawMapEntry")]
 pub struct MapEntry {
     pub written_form: Option<String>,
     pub reading: Option<String>,
@@ -105,6 +96,12 @@ struct MergedEntry {
     match_len: usize,
 }
 
+#[derive(Clone, Debug)]
+struct CachedLookup {
+    entries: Vec<DictionaryEntry>,
+    kanji_entry: Option<KanjiEntry>,
+}
+
 #[pyclass(module = "meikipop_native.dictionary.lookup")]
 pub struct LookupEngine {
     entries: HashMap<i64, Vec<Sense>>,
@@ -112,6 +109,10 @@ pub struct LookupEngine {
     kanji_entries: HashMap<String, KanjiEntry>,
     deconjugator: Deconjugator,
     max_dict_entries: usize,
+    lookup_cache: HashMap<String, CachedLookup>,
+    cache_order: VecDeque<String>,
+    validation_issues: usize,
+    validation_warnings: Vec<String>,
 }
 
 impl LookupEngine {
@@ -122,13 +123,35 @@ impl LookupEngine {
         deconjugator: Deconjugator,
         max_dict_entries: usize,
     ) -> Self {
+        let validation = customdict::validate(&entries, &lookup_map);
         Self {
             entries,
             lookup_map,
             kanji_entries,
             deconjugator,
             max_dict_entries,
+            lookup_cache: HashMap::new(),
+            cache_order: VecDeque::new(),
+            validation_issues: validation.issues,
+            validation_warnings: validation.warnings,
         }
+    }
+
+    pub fn open_paths(pickle_path: &Path, max_dict_entries: usize) -> Result<Self, String> {
+        if !pickle_path.exists() {
+            let data_dir = pickle_path
+                .parent()
+                .ok_or_else(|| "Dictionary path has no parent directory".to_owned())?;
+            customdict::download_dictionary(data_dir)?;
+        }
+
+        let json_path = pickle_path.with_extension("json");
+        customdict::DictionaryData::load_or_convert(
+            Path::new(customdict::PYTHON_EXECUTABLE),
+            pickle_path,
+            &json_path,
+        )
+        .map(|dictionary| dictionary.into_lookup_engine(max_dict_entries))
     }
 
     pub fn lookup(&self, text: &str) -> Vec<DictionaryEntry> {
@@ -149,6 +172,60 @@ impl LookupEngine {
 
     pub fn get_kanji_entry(&self, character: &str) -> Option<&KanjiEntry> {
         self.kanji_entries.get(character)
+    }
+
+    fn lookup_cached(
+        &mut self,
+        lookup_string: &str,
+        max_lookup_length: usize,
+        show_kanji: bool,
+    ) -> CachedLookup {
+        let text = self.prepare_lookup_text(lookup_string, max_lookup_length);
+        if text.is_empty() {
+            return CachedLookup {
+                entries: Vec::new(),
+                kanji_entry: None,
+            };
+        }
+
+        if let Some(result) = self.lookup_cache.get(&text).cloned() {
+            if let Some(index) = self.cache_order.iter().position(|key| key == &text) {
+                self.cache_order.remove(index);
+            }
+            self.cache_order.push_back(text);
+            return result;
+        }
+
+        let entries = self.lookup(&text);
+
+        // Append kanji entry for the first character if applicable
+        let kanji_entry = if show_kanji {
+            text.chars()
+                .next()
+                .filter(|character| is_kanji(*character))
+                .and_then(|character| self.get_kanji_entry(&character.to_string()))
+                .cloned()
+        } else {
+            None
+        };
+        let result = CachedLookup {
+            entries,
+            kanji_entry,
+        };
+
+        self.lookup_cache.insert(text.clone(), result.clone());
+        self.cache_order.push_back(text);
+        if self.lookup_cache.len() > CACHE_SIZE {
+            if let Some(oldest) = self.cache_order.pop_front() {
+                self.lookup_cache.remove(&oldest);
+            }
+        }
+        result
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.lookup_cache.clear();
+        self.cache_order.clear();
     }
 
     /// Scan all prefixes of `text` (longest first), deconjugate each, then
@@ -335,89 +412,56 @@ impl LookupEngine {
     }
 }
 
-#[derive(FromPyObject)]
+#[derive(Deserialize)]
 struct RawMapEntry(Option<String>, Option<String>, i64, i64);
+
+impl From<RawMapEntry> for MapEntry {
+    fn from(value: RawMapEntry) -> Self {
+        let RawMapEntry(written_form, reading, frequency, entry_id) = value;
+        Self {
+            written_form,
+            reading,
+            frequency,
+            entry_id,
+        }
+    }
+}
 
 #[pymethods]
 impl LookupEngine {
-    #[new]
-    fn py_new(
-        entries: &Bound<'_, PyAny>,
-        lookup_map: &Bound<'_, PyAny>,
-        kanji_entries: &Bound<'_, PyAny>,
-        rules: &Bound<'_, PyAny>,
-        max_dict_entries: usize,
-    ) -> PyResult<Self> {
-        let entries: HashMap<i64, Vec<Sense>> = entries.extract()?;
-        let raw_lookup_map: HashMap<String, Vec<RawMapEntry>> = lookup_map.extract()?;
-        let kanji_entries: HashMap<String, KanjiEntry> = kanji_entries.extract()?;
-        let lookup_map = raw_lookup_map
-            .into_iter()
-            .map(|(surface, entries)| {
-                let entries = entries
-                    .into_iter()
-                    .map(
-                        |RawMapEntry(written_form, reading, frequency, entry_id)| MapEntry {
-                            written_form,
-                            reading,
-                            frequency,
-                            entry_id,
-                        },
-                    )
-                    .collect();
-                (surface, entries)
-            })
-            .collect();
-        let deconjugator = Deconjugator::from_python(rules)?;
-
-        Ok(Self::new(
-            entries,
-            lookup_map,
-            kanji_entries,
-            deconjugator,
-            max_dict_entries,
-        ))
-    }
-
-    #[pyo3(name = "prepare_lookup_text")]
-    fn py_prepare_lookup_text(&self, lookup_string: &str, max_lookup_length: usize) -> String {
-        self.prepare_lookup_text(lookup_string, max_lookup_length)
+    #[staticmethod]
+    #[pyo3(name = "open")]
+    fn open(pickle_path: PathBuf, max_dict_entries: usize) -> PyResult<Self> {
+        Self::open_paths(&pickle_path, max_dict_entries)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
 
     fn validate(&self) -> (usize, Vec<String>) {
-        let result = customdict::validate(&self.entries, &self.lookup_map);
-        (result.issues, result.warnings)
+        (self.validation_issues, self.validation_warnings.clone())
     }
 
-    #[pyo3(name = "lookup", signature = (text, show_kanji=false))]
+    #[pyo3(name = "lookup")]
     fn py_lookup<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
-        text: &str,
+        lookup_string: &str,
+        max_lookup_length: usize,
         show_kanji: bool,
     ) -> PyResult<Bound<'py, PyList>> {
         let results = PyList::empty(py);
-        for entry in self.lookup(text) {
+        let result = self.lookup_cached(lookup_string, max_lookup_length, show_kanji);
+        for entry in result.entries {
             results.append(entry)?;
         }
-
-        // Append kanji entry for the first character if applicable
-        if show_kanji && text.chars().next().is_some_and(is_kanji) {
-            if let Some(entry) = text
-                .chars()
-                .next()
-                .and_then(|character| self.get_kanji_entry(&character.to_string()))
-            {
-                results.append(entry.clone())?;
-            }
+        if let Some(entry) = result.kanji_entry {
+            results.append(entry)?;
         }
-
         Ok(results)
     }
 
-    #[pyo3(name = "get_kanji_entry")]
-    fn py_get_kanji_entry(&self, character: &str) -> Option<KanjiEntry> {
-        self.get_kanji_entry(character).cloned()
+    #[pyo3(name = "clear_cache")]
+    fn py_clear_cache(&mut self) {
+        self.clear_cache();
     }
 }
 
@@ -635,6 +679,39 @@ mod tests {
 
         assert_eq!(engine.get_kanji_entry("猫"), Some(&kanji_entry));
         assert_eq!(engine.get_kanji_entry("犬"), None);
+    }
+
+    #[test]
+    fn caches_by_preprocessed_text_and_clears_the_cache() {
+        let mut engine = engine(HashMap::new(), HashMap::new(), 10);
+
+        engine.lookup_cached("  猫。犬  ", 10, false);
+        engine.lookup_cached("猫", 10, false);
+
+        assert_eq!(engine.lookup_cache.len(), 1);
+        assert_eq!(engine.cache_order, ["猫"]);
+
+        engine.clear_cache();
+
+        assert!(engine.lookup_cache.is_empty());
+        assert!(engine.cache_order.is_empty());
+    }
+
+    #[test]
+    fn limits_the_lookup_cache_to_the_upstream_size() {
+        let mut engine = engine(HashMap::new(), HashMap::new(), 10);
+
+        for index in 0..=CACHE_SIZE {
+            engine.lookup_cached(&format!("word{index}"), 20, false);
+        }
+
+        assert_eq!(engine.lookup_cache.len(), CACHE_SIZE);
+        assert!(!engine.lookup_cache.contains_key("word0"));
+        assert!(
+            engine
+                .lookup_cache
+                .contains_key(&format!("word{CACHE_SIZE}"))
+        );
     }
 
     #[test]

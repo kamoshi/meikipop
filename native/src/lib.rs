@@ -97,7 +97,6 @@ fn backend_name() -> &'static str {
 fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     let dictionary_module = PyModule::new(py, "dictionary")?;
-    let customdict_module = PyModule::new(py, "customdict")?;
     let deconjugator_module = PyModule::new(py, "deconjugator")?;
     let lookup_module = PyModule::new(py, "lookup")?;
     let ocr_module = PyModule::new(py, "ocr")?;
@@ -111,9 +110,7 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     deconjugator_module.add_class::<dictionary::deconjugator::Form>()?;
     deconjugator_module.add_class::<dictionary::deconjugator::Deconjugator>()?;
-    dictionary::customdict::register_python(&customdict_module)?;
     dictionary::lookup::register_python(&lookup_module)?;
-    dictionary_module.add_submodule(&customdict_module)?;
     dictionary_module.add_submodule(&deconjugator_module)?;
     dictionary_module.add_submodule(&lookup_module)?;
     module.add_submodule(&dictionary_module)?;
@@ -129,7 +126,6 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // require the fully-qualified modules to be present in sys.modules.
     let modules = py.import("sys")?.getattr("modules")?;
     modules.set_item("meikipop_native.dictionary", &dictionary_module)?;
-    modules.set_item("meikipop_native.dictionary.customdict", &customdict_module)?;
     modules.set_item(
         "meikipop_native.dictionary.deconjugator",
         &deconjugator_module,
