@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes};
 
 pub mod dictionary;
+pub mod ocr;
 mod wayland_capture;
 use wayland_capture::WaylandCapture;
 
@@ -97,6 +98,9 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     let dictionary_module = PyModule::new(py, "dictionary")?;
     let deconjugator_module = PyModule::new(py, "deconjugator")?;
+    let ocr_module = PyModule::new(py, "ocr")?;
+    let providers_module = PyModule::new(py, "providers")?;
+    let postprocessing_module = PyModule::new(py, "postprocessing")?;
 
     deconjugator_module.add(
         "MAX_DECONJ_ITERATIONS",
@@ -107,6 +111,11 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     dictionary_module.add_submodule(&deconjugator_module)?;
     module.add_submodule(&dictionary_module)?;
 
+    ocr::providers::postprocessing::register_python(&postprocessing_module)?;
+    providers_module.add_submodule(&postprocessing_module)?;
+    ocr_module.add_submodule(&providers_module)?;
+    module.add_submodule(&ocr_module)?;
+
     // PyModule::add_submodule exposes attributes, while import statements also
     // require the fully-qualified modules to be present in sys.modules.
     let modules = py.import("sys")?.getattr("modules")?;
@@ -114,6 +123,12 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     modules.set_item(
         "meikipop_native.dictionary.deconjugator",
         &deconjugator_module,
+    )?;
+    modules.set_item("meikipop_native.ocr", &ocr_module)?;
+    modules.set_item("meikipop_native.ocr.providers", &providers_module)?;
+    modules.set_item(
+        "meikipop_native.ocr.providers.postprocessing",
+        &postprocessing_module,
     )?;
 
     module.add_class::<WaylandCapture>()?;
