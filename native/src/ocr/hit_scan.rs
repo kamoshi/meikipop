@@ -1,4 +1,4 @@
-use crate::ocr::interface::{paragraph_from_python, BoundingBox, Paragraph};
+use crate::ocr::interface::{BoundingBox, Paragraph, paragraph_from_python};
 use pyo3::prelude::*;
 
 fn is_in_box(point: (f64, f64), r#box: Option<&BoundingBox>) -> bool {
@@ -243,5 +243,130 @@ mod tests {
         let paragraph = paragraph_with_word("日本語", BoundingBox::new(0.5, 0.5, 0.4, 0.2), false);
 
         assert_eq!(hit_scan(&[paragraph], 0.1, 0.1), None);
+    }
+
+    #[test]
+    fn empty_paragraph_list_returns_none() {
+        assert_eq!(hit_scan(&[], 0.5, 0.5), None);
+    }
+
+    #[test]
+    fn vertical_scan_returns_japanese_suffix() {
+        let paragraph = paragraph_with_word("縦書き", BoundingBox::new(0.5, 0.5, 0.2, 0.6), true);
+
+        assert_eq!(hit_scan(&[paragraph], 0.5, 0.5), Some("書き".into()),);
+    }
+
+    #[test]
+    fn horizontal_scan_at_trailing_edge_returns_last_character() {
+        let paragraph = paragraph_with_word("日本語", BoundingBox::new(0.5, 0.5, 0.6, 0.2), false);
+
+        // The box extends from x=0.2 through x=0.8.
+        assert_eq!(hit_scan(&[paragraph], 0.8, 0.5), Some("語".into()),);
+    }
+
+    #[test]
+    fn vertical_scan_at_trailing_edge_returns_last_character() {
+        let paragraph = paragraph_with_word("縦書き", BoundingBox::new(0.5, 0.5, 0.2, 0.6), true);
+
+        // The box extends from y=0.2 through y=0.8.
+        assert_eq!(hit_scan(&[paragraph], 0.5, 0.8), Some("き".into()),);
+    }
+
+    #[test]
+    fn empty_selected_word_is_skipped() {
+        let paragraph = paragraph_with_word("", BoundingBox::new(0.5, 0.5, 0.4, 0.2), false);
+
+        assert_eq!(hit_scan(&[paragraph], 0.5, 0.5), None);
+    }
+
+    #[test]
+    fn paragraph_without_words_returns_none() {
+        let paragraph = Paragraph {
+            full_text: "日本語".into(),
+            words: Vec::new(),
+            r#box: BoundingBox::new(0.5, 0.5, 0.6, 0.2),
+            is_vertical: false,
+        };
+
+        assert_eq!(hit_scan(&[paragraph], 0.5, 0.5), None);
+    }
+
+    #[test]
+    fn zero_width_word_selects_its_first_character() {
+        let paragraph = paragraph_with_word("日本語", BoundingBox::new(0.5, 0.5, 0.0, 0.2), false);
+
+        assert_eq!(hit_scan(&[paragraph], 0.5, 0.5), Some("日本語".into()),);
+    }
+
+    #[test]
+    fn zero_height_vertical_word_selects_its_first_character() {
+        let paragraph = paragraph_with_word("縦書き", BoundingBox::new(0.5, 0.5, 0.2, 0.0), true);
+
+        assert_eq!(hit_scan(&[paragraph], 0.5, 0.5), Some("縦書き".into()),);
+    }
+
+    #[test]
+    fn scan_skips_paragraphs_that_do_not_contain_point() {
+        let outside = paragraph_with_word("外", BoundingBox::new(0.1, 0.1, 0.1, 0.1), false);
+        let inside = paragraph_with_word("日本語", BoundingBox::new(0.5, 0.5, 0.6, 0.2), false);
+
+        assert_eq!(hit_scan(&[outside, inside], 0.5, 0.5), Some("本語".into()),);
+    }
+
+    #[test]
+    fn first_matching_paragraph_wins() {
+        let first = paragraph_with_word("第一", BoundingBox::new(0.5, 0.5, 0.6, 0.2), false);
+        let second = paragraph_with_word("第二", BoundingBox::new(0.5, 0.5, 0.6, 0.2), false);
+
+        assert_eq!(hit_scan(&[first, second], 0.2, 0.5), Some("第一".into()),);
+    }
+
+    fn paragraph_with_multiple_words() -> Paragraph {
+        let first_box = BoundingBox::new(0.25, 0.5, 0.3, 0.2);
+        let second_box = BoundingBox::new(0.65, 0.5, 0.4, 0.2);
+
+        Paragraph {
+            full_text: "日本語です".into(),
+            words: vec![
+                Word {
+                    text: "日本".into(),
+                    separator: String::new(),
+                    r#box: first_box,
+                },
+                Word {
+                    text: "語です".into(),
+                    separator: String::new(),
+                    r#box: second_box,
+                },
+            ],
+            r#box: BoundingBox::new(0.475, 0.5, 0.75, 0.2),
+            is_vertical: false,
+        }
+    }
+
+    #[test]
+    fn scan_calculates_offset_of_second_word() {
+        let paragraph = paragraph_with_multiple_words();
+
+        // Near the beginning of the second word.
+        assert_eq!(hit_scan(&[paragraph], 0.46, 0.5), Some("語です".into()),);
+    }
+
+    #[test]
+    fn gap_between_words_is_assigned_to_preceding_word() {
+        let paragraph = paragraph_with_multiple_words();
+
+        // First word ends at x=0.4 and second begins at x=0.45.
+        assert_eq!(hit_scan(&[paragraph], 0.425, 0.5), Some("本語です".into()),);
+    }
+
+    #[test]
+    fn inconsistent_full_text_does_not_produce_invalid_slice() {
+        let mut paragraph =
+            paragraph_with_word("日本語", BoundingBox::new(0.5, 0.5, 0.6, 0.2), false);
+        paragraph.full_text = "日".into();
+
+        assert_eq!(hit_scan(&[paragraph], 0.8, 0.5), None);
     }
 }
