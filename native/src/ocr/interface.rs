@@ -1,3 +1,29 @@
+use std::error::Error;
+
+use opencv::core::Mat;
+use pyo3::prelude::*;
+
+/// Abstract interface for an OCR provider.
+///
+/// Any type that implements this interface can be used by the application's
+/// OcrProcessor. This allows for easily swapping out different OCR backends.
+pub trait OcrProvider {
+    /// A user-friendly name for this provider.
+    fn name(&self) -> &'static str;
+
+    /// Performs OCR on the given image.
+    ///
+    /// # Arguments
+    ///
+    /// * `image` - An OpenCV image to perform OCR on.
+    ///
+    /// # Returns
+    ///
+    /// A list of Paragraph objects found in the image, or an error if one
+    /// occurred. Returns an empty list if no text is found.
+    fn scan(&mut self, image: &Mat) -> Result<Vec<Paragraph>, Box<dyn Error>>;
+}
+
 /// A normalized bounding box. All coordinates are floats between 0.0 and 1.0.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BoundingBox {
@@ -76,4 +102,3 @@ pub(crate) fn paragraph_from_python(value: &Bound<'_, PyAny>) -> PyResult<Paragr
         is_vertical: value.getattr("is_vertical")?.extract()?,
     })
 }
-use pyo3::prelude::*;

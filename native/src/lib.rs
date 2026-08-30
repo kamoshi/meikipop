@@ -102,6 +102,7 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let ocr_module = PyModule::new(py, "ocr")?;
     let hit_scan_module = PyModule::new(py, "hit_scan")?;
     let providers_module = PyModule::new(py, "providers")?;
+    let dummy_module = PyModule::new(py, "dummy")?;
     let meikiocr_module = PyModule::new(py, "meikiocr")?;
     let postprocessing_module = PyModule::new(py, "postprocessing")?;
 
@@ -118,9 +119,11 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
     ocr::hit_scan::register_python(&hit_scan_module)?;
     ocr_module.add_submodule(&hit_scan_module)?;
+    ocr::providers::dummy::provider::register_python(&dummy_module)?;
     ocr::providers::meikiocr::ocr::register_python(&meikiocr_module)?;
     ocr::providers::meikiocr::provider::register_python(&meikiocr_module)?;
     ocr::providers::postprocessing::register_python(&postprocessing_module)?;
+    providers_module.add_submodule(&dummy_module)?;
     providers_module.add_submodule(&meikiocr_module)?;
     providers_module.add_submodule(&postprocessing_module)?;
     ocr_module.add_submodule(&providers_module)?;
@@ -138,6 +141,7 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     modules.set_item("meikipop_native.ocr", &ocr_module)?;
     modules.set_item("meikipop_native.ocr.hit_scan", &hit_scan_module)?;
     modules.set_item("meikipop_native.ocr.providers", &providers_module)?;
+    modules.set_item("meikipop_native.ocr.providers.dummy", &dummy_module)?;
     modules.set_item("meikipop_native.ocr.providers.meikiocr", &meikiocr_module)?;
     modules.set_item(
         "meikipop_native.ocr.providers.postprocessing",

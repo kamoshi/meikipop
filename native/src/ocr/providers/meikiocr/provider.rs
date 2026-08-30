@@ -9,7 +9,7 @@ use pyo3::types::PyBytes;
 use super::ocr::{MeikiOcr, OcrResult, mat_from_rgb_bytes};
 
 // Import the "contract" classes from your application's interface
-use crate::ocr::interface::{BoundingBox, Paragraph, Word};
+use crate::ocr::interface::{BoundingBox, OcrProvider, Paragraph, Word};
 use crate::ocr::providers::postprocessing::group_lines_into_paragraphs;
 
 // --- pipeline configuration ---
@@ -139,6 +139,16 @@ impl MeikiOcrProvider {
     }
 }
 
+impl OcrProvider for MeikiOcrProvider {
+    fn name(&self) -> &'static str {
+        "meikiocr (local)"
+    }
+
+    fn scan(&mut self, image: &Mat) -> Result<Vec<Paragraph>, Box<dyn std::error::Error>> {
+        MeikiOcrProvider::scan(self, image)
+    }
+}
+
 fn is_japanese_character(character: char) -> bool {
     matches!(
         character,
@@ -182,7 +192,10 @@ impl PyMeikiOcrProvider {
     }
 }
 
-fn paragraphs_to_python(py: Python<'_>, paragraphs: Vec<Paragraph>) -> PyResult<Vec<Py<PyAny>>> {
+pub(crate) fn paragraphs_to_python(
+    py: Python<'_>,
+    paragraphs: Vec<Paragraph>,
+) -> PyResult<Vec<Py<PyAny>>> {
     let interface = py.import("meikipop.ocr.interface")?;
     let bounding_box_class = interface.getattr("BoundingBox")?;
     let word_class = interface.getattr("Word")?;
