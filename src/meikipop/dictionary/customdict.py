@@ -2,16 +2,12 @@
 import logging
 import pickle
 import time
-import urllib.request
-import zipfile
-import io
 from collections import defaultdict
 
 from meikipop.utils.paths import paths
+from meikipop_native.dictionary.customdict import download_dictionary
 
 logger = logging.getLogger(__name__)
-
-DICT_URL = "https://github.com/rtr46/meikipop/releases/download/dictionary-latest/dictionary.zip"
 
 DEFAULT_FREQ = 999_999
 
@@ -56,7 +52,6 @@ class Dictionary:
                 f"Dictionary loaded in {time.perf_counter() - start:.2f}s"
                 f"({len(self.entries)} core entries, {n_refs} lookup refs)"
             )
-            self._validate()
             return True
         except FileNotFoundError:
             logger.warning(f"Dictionary file not found. Trying download...")
@@ -73,86 +68,16 @@ class Dictionary:
 
     def _download_dictionary(self) -> bool:
         try:
-            with urllib.request.urlopen(DICT_URL) as response:
-                data = response.read()
-            with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                zf.extract("dictionary.pkl", path=paths.data_dir)
+            download_dictionary(paths.data_dir)
             logger.info("Dictionary downloaded successfully.")
             return True
         except Exception as e:
             logger.error(f"Failed to download dictionary: {e}")
             return False
 
-
-    def _validate(self):
-        """
-        Scan the loaded dictionary for structural invariants and log warnings
-        for any violations found. Never raises — validation is advisory only.
-
-        Invariants checked:
-          - Every map entry tuple has exactly 4 elements
-          - written_form is a non-empty str or None (None is valid for kana-only)
-          - reading is a str or None
-          - freq is an int
-          - entry_id exists in self.entries
-          - A map entry reached via a kanji-containing key must not have
-            written_form=None (that would render as an invisible entry)
-        """
-        issues = 0
-        missing_entry_ids = set()
-
-        for surface, me_list in self.lookup_map.items():
-            surface_has_kanji = any(0x4E00 <= ord(c) <= 0x9FFF for c in surface)
-            for me in me_list:
-                if len(me) != 4:
-                    logger.warning(
-                        f"Malformed map entry under key '{surface}': "
-                        f"expected 4 fields, got {len(me)} — {me!r}"
-                    )
-                    issues += 1
-                    continue
-
-                wf, rd, freq, entry_id = me
-
-                if wf is not None and not isinstance(wf, str):
-                    logger.warning(
-                        f"Map entry under '{surface}': written_form is {type(wf).__name__} "
-                        f"(expected str or None) — entry_id={entry_id}"
-                    )
-                    issues += 1
-
-                if rd is not None and not isinstance(rd, str):
-                    logger.warning(
-                        f"Map entry under '{surface}': reading is {type(rd).__name__} "
-                        f"(expected str or None) — entry_id={entry_id}"
-                    )
-                    issues += 1
-
-                if not isinstance(freq, int):
-                    logger.warning(
-                        f"Map entry under '{surface}': freq is {type(freq).__name__} "
-                        f"(expected int) — entry_id={entry_id}"
-                    )
-                    issues += 1
-
-                if surface_has_kanji and wf is None:
-                    logger.warning(
-                        f"Map entry under kanji key '{surface}' has written_form=None "
-                        f"(entry will display incorrectly) — entry_id={entry_id}"
-                    )
-                    issues += 1
-
-                if entry_id not in self.entries:
-                    missing_entry_ids.add(entry_id)
-                    issues += 1
-
-        if missing_entry_ids:
-            logger.warning(
-                f"{len(missing_entry_ids)} entry ID(s) referenced in lookup_map "
-                f"have no matching core entry — first few: "
-                f"{sorted(missing_entry_ids)[:5]}"
-            )
-
+    def log_validation(self, issues, warnings):
+        for warning in warnings:
+            logger.warning(warning)
         if issues == 0:
             logger.info("Dictionary validation passed with no issues.")
         else:

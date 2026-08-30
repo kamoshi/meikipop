@@ -1,5 +1,4 @@
 import logging
-import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -8,14 +7,6 @@ from typing import Dict, List
 from meikipop.config.config import config, MAX_DICT_ENTRIES, DICT_PATH
 from meikipop.dictionary.customdict import Dictionary
 from meikipop_native.dictionary.lookup import LookupEngine
-
-KANJI_REGEX = re.compile(r'[\u4e00-\u9faf]')
-JAPANESE_SEPARATORS = {
-    "、", "。", "「", "」", "｛", "｝", "（", "）", "【", "】",
-    "『", "』", "〈", "〉", "《", "》", "：", "・", "／",
-    "…", "︙", "‥", "︰", "＋", "＝", "－", "÷", "？", "！",
-    "．", "～", "―", "!", "?",
-}
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +38,20 @@ class Lookup(threading.Thread):
         self.popup_window = popup_window
         self.last_hit_result = None
 
-        self.dictionary = Dictionary()
+        dictionary = Dictionary()
         self.lookup_cache: OrderedDict = OrderedDict()
         self.CACHE_SIZE = 500
 
-        if not self.dictionary.load_dictionary(DICT_PATH):
+        if not dictionary.load_dictionary(DICT_PATH):
             raise RuntimeError("Failed to load dictionary.")
         self.lookup_engine = LookupEngine(
-            self.dictionary.entries,
-            self.dictionary.lookup_map,
-            self.dictionary.deconjugator_rules,
+            dictionary.entries,
+            dictionary.lookup_map,
+            dictionary.kanji_entries,
+            dictionary.deconjugator_rules,
             MAX_DICT_ENTRIES,
         )
+        dictionary.log_validation(*self.lookup_engine.validate())
 
     def clear_cache(self):
         self.lookup_cache = OrderedDict()
@@ -88,12 +81,7 @@ class Lookup(threading.Thread):
             return []
         logger.info(f"Looking up: {lookup_string}")  # keep at info level so people know whats up
 
-        text = lookup_string.strip()
-        text = text[:config.max_lookup_length]
-        for i, ch in enumerate(text):
-            if ch in JAPANESE_SEPARATORS:
-                text = text[:i]
-                break
+        text = self.lookup_engine.prepare_lookup_text(lookup_string, config.max_lookup_length)
         if not text:
             return []
 
@@ -103,26 +91,17 @@ class Lookup(threading.Thread):
 
         results = self._do_lookup(text)
 
-        # Append kanji entry for the first character if applicable
-        if config.show_kanji and KANJI_REGEX.match(text[0]):
-            kd = self.dictionary.kanji_entries.get(text[0])
-            if kd:
-                results.append(KanjiEntry(
-                    character=kd['character'],
-                    meanings=kd['meanings'],
-                    readings=kd['readings'],
-                    components=kd.get('components', []),
-                    examples=kd.get('examples', []),
-                ))
-
         self.lookup_cache[text] = results
         if len(self.lookup_cache) > self.CACHE_SIZE:
             self.lookup_cache.popitem(last=False)
         return results
 
-    def _do_lookup(self, text: str) -> List[DictionaryEntry]:
+    def _do_lookup(self, text: str) -> List:
         results = []
-        for entry in self.lookup_engine.lookup(text):
-            entry['deconjugation_process'] = tuple(entry['deconjugation_process'])
-            results.append(DictionaryEntry(**entry))
+        for entry in self.lookup_engine.lookup(text, config.show_kanji):
+            if 'character' in entry:
+                results.append(KanjiEntry(**entry))
+            else:
+                entry['deconjugation_process'] = tuple(entry['deconjugation_process'])
+                results.append(DictionaryEntry(**entry))
         return results

@@ -1,6 +1,6 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PySet, PyTuple};
+use pyo3::types::{PyDict, PySet, PyTuple};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -13,6 +13,13 @@ pub const MAX_DECONJ_ITERATIONS: usize = 10;
 enum OneOrMany<T> {
     One(T),
     Many(Vec<T>),
+}
+
+fn extract_one_or_many(value: &Bound<'_, PyAny>) -> PyResult<OneOrMany<String>> {
+    if let Ok(value) = value.extract::<String>() {
+        return Ok(OneOrMany::One(value));
+    }
+    Ok(OneOrMany::Many(value.extract()?))
 }
 
 impl<T> OneOrMany<T> {
@@ -35,6 +42,32 @@ pub struct Rule {
     con_tag: Option<OneOrMany<String>>,
     #[serde(default)]
     detail: String,
+}
+
+impl Rule {
+    fn from_python(rule: &Bound<'_, PyDict>) -> PyResult<Self> {
+        let extract_one_or_many = |key| {
+            rule.get_item(key)?
+                .map(|value| extract_one_or_many(&value))
+                .transpose()
+        };
+
+        Ok(Self {
+            rule_type: rule
+                .get_item("type")?
+                .map(|value| value.extract())
+                .transpose()?,
+            dec_end: extract_one_or_many("dec_end")?,
+            con_end: extract_one_or_many("con_end")?,
+            dec_tag: extract_one_or_many("dec_tag")?,
+            con_tag: extract_one_or_many("con_tag")?,
+            detail: rule
+                .get_item("detail")?
+                .map(|value| value.extract())
+                .transpose()?
+                .unwrap_or_default(),
+        })
+    }
 }
 
 #[pyclass(
@@ -162,6 +195,20 @@ impl Deconjugator {
             .map(serde_json::from_value)
             .collect::<serde_json::Result<Vec<_>>>()?;
         Ok(Self::new(rules))
+    }
+
+    /// Parse the upstream Python format, ignoring non-dictionary entries just
+    /// as the Python constructor ignores values that are not dictionaries.
+    pub fn from_python(rules: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mut parsed_rules = Vec::new();
+        for rule in rules.try_iter()? {
+            let rule = rule?;
+            let Ok(rule) = rule.cast::<PyDict>() else {
+                continue;
+            };
+            parsed_rules.push(Rule::from_python(rule)?);
+        }
+        Ok(Self::new(parsed_rules))
     }
 
     pub fn deconjugate(&self, text: &str) -> HashSet<Form> {

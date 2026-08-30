@@ -1,10 +1,78 @@
+use crate::dictionary::customdict;
 use crate::dictionary::deconjugator::{Deconjugator, Form};
 use pyo3::prelude::*;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use pyo3::types::{PyDict, PyList};
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 pub const DEFAULT_FREQ: i64 = 999_999;
+pub const JAPANESE_SEPARATORS: &str = concat!(
+    "、。「」｛｝（）【】",
+    "『』〈〉《》：・／",
+    "…︙‥︰＋＝－÷？！",
+    "．～―!?",
+);
+
+/// The typed equivalent of one upstream sense dictionary.
+#[derive(Clone, Debug, PartialEq, Eq, FromPyObject, IntoPyObject)]
+pub struct Sense {
+    #[pyo3(item)]
+    pub glosses: Vec<String>,
+    #[pyo3(item)]
+    pub pos: Vec<String>,
+    #[pyo3(item)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, FromPyObject)]
+pub struct KanjiComponent {
+    #[pyo3(item)]
+    pub c: String,
+    #[pyo3(item, default)]
+    pub m: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, FromPyObject, IntoPyObject)]
+pub struct KanjiExample {
+    #[pyo3(item)]
+    pub w: String,
+    #[pyo3(item)]
+    pub r: String,
+    #[pyo3(item)]
+    pub m: String,
+}
+
+/// The typed equivalent of one upstream kanji entry dictionary.
+fn components_to_python<'py>(
+    components: Cow<'_, Vec<KanjiComponent>>,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let result = PyList::empty(py);
+    for component in components.iter() {
+        let value = PyDict::new(py);
+        value.set_item("c", &component.c)?;
+        if let Some(meaning) = &component.m {
+            value.set_item("m", meaning)?;
+        }
+        result.append(value)?;
+    }
+    Ok(result.into_any())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, FromPyObject, IntoPyObject)]
+pub struct KanjiEntry {
+    #[pyo3(item)]
+    pub character: String,
+    #[pyo3(item)]
+    pub meanings: Vec<String>,
+    #[pyo3(item)]
+    pub readings: Vec<String>,
+    #[pyo3(item)]
+    #[pyo3(into_py_with = components_to_python)]
+    pub components: Vec<KanjiComponent>,
+    #[pyo3(item)]
+    pub examples: Vec<KanjiExample>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MapEntry {
@@ -14,12 +82,12 @@ pub struct MapEntry {
     pub entry_id: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, IntoPyObject)]
 pub struct DictionaryEntry {
     pub id: i64,
     pub written_form: Option<String>,
     pub reading: String,
-    pub senses: Vec<Value>,
+    pub senses: Vec<Sense>,
     pub freq: i64,
     pub deconjugation_process: Vec<String>,
     pub priority: f64,
@@ -30,7 +98,7 @@ struct MergedEntry {
     id: i64,
     written_form: Option<String>,
     reading: String,
-    senses: Vec<Value>,
+    senses: Vec<Sense>,
     freq: i64,
     deconjugation_process: Vec<String>,
     priority: f64,
@@ -39,22 +107,25 @@ struct MergedEntry {
 
 #[pyclass(module = "meikipop_native.dictionary.lookup")]
 pub struct LookupEngine {
-    entries: HashMap<i64, Vec<Value>>,
+    entries: HashMap<i64, Vec<Sense>>,
     lookup_map: HashMap<String, Vec<MapEntry>>,
+    kanji_entries: HashMap<String, KanjiEntry>,
     deconjugator: Deconjugator,
     max_dict_entries: usize,
 }
 
 impl LookupEngine {
     pub fn new(
-        entries: HashMap<i64, Vec<Value>>,
+        entries: HashMap<i64, Vec<Sense>>,
         lookup_map: HashMap<String, Vec<MapEntry>>,
+        kanji_entries: HashMap<String, KanjiEntry>,
         deconjugator: Deconjugator,
         max_dict_entries: usize,
     ) -> Self {
         Self {
             entries,
             lookup_map,
+            kanji_entries,
             deconjugator,
             max_dict_entries,
         }
@@ -62,6 +133,22 @@ impl LookupEngine {
 
     pub fn lookup(&self, text: &str) -> Vec<DictionaryEntry> {
         self.do_lookup(text)
+    }
+
+    pub fn prepare_lookup_text(&self, lookup_string: &str, max_lookup_length: usize) -> String {
+        let mut text: String = lookup_string
+            .trim()
+            .chars()
+            .take(max_lookup_length)
+            .collect();
+        if let Some(index) = text.find(|ch| JAPANESE_SEPARATORS.contains(ch)) {
+            text.truncate(index);
+        }
+        text
+    }
+
+    pub fn get_kanji_entry(&self, character: &str) -> Option<&KanjiEntry> {
+        self.kanji_entries.get(character)
     }
 
     /// Scan all prefixes of `text` (longest first), deconjugate each, then
@@ -104,14 +191,9 @@ impl LookupEngine {
                     if let Some(required_pos) = form.tags.last() {
                         let entry_senses = self.entries.get(&entry_id);
                         let has_required_pos = entry_senses.is_some_and(|senses| {
-                            senses.iter().any(|sense| {
-                                sense
-                                    .get("pos")
-                                    .and_then(Value::as_array)
-                                    .is_some_and(|pos| {
-                                        pos.iter().any(|value| value.as_str() == Some(required_pos))
-                                    })
-                            })
+                            senses
+                                .iter()
+                                .any(|sense| sense.pos.iter().any(|pos| pos == required_pos))
                         });
                         if !has_required_pos {
                             // logger.debug(
@@ -253,7 +335,7 @@ impl LookupEngine {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(FromPyObject)]
 struct RawMapEntry(Option<String>, Option<String>, i64, i64);
 
 #[pymethods]
@@ -262,23 +344,13 @@ impl LookupEngine {
     fn py_new(
         entries: &Bound<'_, PyAny>,
         lookup_map: &Bound<'_, PyAny>,
+        kanji_entries: &Bound<'_, PyAny>,
         rules: &Bound<'_, PyAny>,
         max_dict_entries: usize,
     ) -> PyResult<Self> {
-        let json = entries.py().import("json")?;
-        let entries_json = json
-            .call_method1("dumps", (entries,))?
-            .extract::<String>()?;
-        let lookup_map_json = json
-            .call_method1("dumps", (lookup_map,))?
-            .extract::<String>()?;
-        let rules_json = json.call_method1("dumps", (rules,))?.extract::<String>()?;
-
-        let entries: HashMap<i64, Vec<Value>> = serde_json::from_str(&entries_json)
-            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
-        let raw_lookup_map: HashMap<String, Vec<RawMapEntry>> =
-            serde_json::from_str(&lookup_map_json)
-                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let entries: HashMap<i64, Vec<Sense>> = entries.extract()?;
+        let raw_lookup_map: HashMap<String, Vec<RawMapEntry>> = lookup_map.extract()?;
+        let kanji_entries: HashMap<String, KanjiEntry> = kanji_entries.extract()?;
         let lookup_map = raw_lookup_map
             .into_iter()
             .map(|(surface, entries)| {
@@ -296,25 +368,56 @@ impl LookupEngine {
                 (surface, entries)
             })
             .collect();
-        let deconjugator = Deconjugator::from_json(&rules_json)
-            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let deconjugator = Deconjugator::from_python(rules)?;
 
         Ok(Self::new(
             entries,
             lookup_map,
+            kanji_entries,
             deconjugator,
             max_dict_entries,
         ))
     }
 
-    #[pyo3(name = "lookup")]
-    fn py_lookup(&self, py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
-        let serialized = serde_json::to_string(&self.lookup(text))
-            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
-        Ok(py
-            .import("json")?
-            .call_method1("loads", (serialized,))?
-            .unbind())
+    #[pyo3(name = "prepare_lookup_text")]
+    fn py_prepare_lookup_text(&self, lookup_string: &str, max_lookup_length: usize) -> String {
+        self.prepare_lookup_text(lookup_string, max_lookup_length)
+    }
+
+    fn validate(&self) -> (usize, Vec<String>) {
+        let result = customdict::validate(&self.entries, &self.lookup_map);
+        (result.issues, result.warnings)
+    }
+
+    #[pyo3(name = "lookup", signature = (text, show_kanji=false))]
+    fn py_lookup<'py>(
+        &self,
+        py: Python<'py>,
+        text: &str,
+        show_kanji: bool,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let results = PyList::empty(py);
+        for entry in self.lookup(text) {
+            results.append(entry)?;
+        }
+
+        // Append kanji entry for the first character if applicable
+        if show_kanji && text.chars().next().is_some_and(is_kanji) {
+            if let Some(entry) = text
+                .chars()
+                .next()
+                .and_then(|character| self.get_kanji_entry(&character.to_string()))
+            {
+                results.append(entry.clone())?;
+            }
+        }
+
+        Ok(results)
+    }
+
+    #[pyo3(name = "get_kanji_entry")]
+    fn py_get_kanji_entry(&self, character: &str) -> Option<KanjiEntry> {
+        self.get_kanji_entry(character).cloned()
     }
 }
 
@@ -324,7 +427,11 @@ pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 pub fn contains_kanji(text: &str) -> bool {
-    text.chars().any(|c| ('\u{4e00}'..='\u{9faf}').contains(&c))
+    text.chars().any(is_kanji)
+}
+
+pub fn is_kanji(character: char) -> bool {
+    ('\u{4e00}'..='\u{9faf}').contains(&character)
 }
 
 pub fn calculate_priority(
@@ -398,7 +505,6 @@ pub fn kata_to_hira(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn map_entry(
         written_form: Option<&str>,
@@ -415,13 +521,14 @@ mod tests {
     }
 
     fn engine(
-        entries: HashMap<i64, Vec<Value>>,
+        entries: HashMap<i64, Vec<Sense>>,
         lookup_map: HashMap<String, Vec<MapEntry>>,
         max_dict_entries: usize,
     ) -> LookupEngine {
         LookupEngine::new(
             entries,
             lookup_map,
+            HashMap::new(),
             Deconjugator::from_json("[]").unwrap(),
             max_dict_entries,
         )
@@ -432,6 +539,17 @@ mod tests {
         assert!(contains_kanji("食べる"));
         assert!(!contains_kanji("たべる"));
         assert!(!contains_kanji(""));
+    }
+
+    #[test]
+    fn prepares_lookup_text_like_upstream() {
+        let engine = engine(HashMap::new(), HashMap::new(), 10);
+
+        assert_eq!(engine.prepare_lookup_text("  食べました  ", 4), "食べまし");
+        assert_eq!(engine.prepare_lookup_text("猫。犬", 10), "猫");
+        assert_eq!(engine.prepare_lookup_text("猫!犬", 10), "猫");
+        assert_eq!(engine.prepare_lookup_text("  ", 10), "");
+        assert_eq!(engine.prepare_lookup_text("猫", 0), "");
     }
 
     #[test]
@@ -471,7 +589,11 @@ mod tests {
     fn looks_up_prefixes_and_builds_dictionary_entries() {
         let entries = HashMap::from([(
             1,
-            vec![json!({"glosses": ["to eat"], "pos": ["v1"], "tags": []})],
+            vec![Sense {
+                glosses: vec!["to eat".into()],
+                pos: vec!["v1".into()],
+                tags: vec![],
+            }],
         )]);
         let lookup_map = HashMap::from([(
             "食べる".into(),
@@ -485,6 +607,34 @@ mod tests {
         assert_eq!(result[0].written_form.as_deref(), Some("食べる"));
         assert_eq!(result[0].reading, "たべる");
         assert_eq!(result[0].id, 1);
+    }
+
+    #[test]
+    fn gets_kanji_entries() {
+        let kanji_entry = KanjiEntry {
+            character: "猫".into(),
+            meanings: vec!["cat".into()],
+            readings: vec!["ビョウ".into(), "ねこ".into()],
+            components: vec![KanjiComponent {
+                c: "犭".into(),
+                m: None,
+            }],
+            examples: vec![KanjiExample {
+                w: "子猫".into(),
+                r: "こねこ".into(),
+                m: "kitten".into(),
+            }],
+        };
+        let engine = LookupEngine::new(
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::from([("猫".into(), kanji_entry.clone())]),
+            Deconjugator::from_json("[]").unwrap(),
+            10,
+        );
+
+        assert_eq!(engine.get_kanji_entry("猫"), Some(&kanji_entry));
+        assert_eq!(engine.get_kanji_entry("犬"), None);
     }
 
     #[test]
