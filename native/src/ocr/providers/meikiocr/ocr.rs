@@ -841,7 +841,7 @@ fn is_punctuation(character: char) -> bool {
     )
 }
 
-fn mat_from_rgb_bytes(bytes: &[u8], width: usize, height: usize) -> PyResult<Mat> {
+pub(super) fn mat_from_rgb_bytes(bytes: &[u8], width: usize, height: usize) -> PyResult<Mat> {
     let expected_len = width
         .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(3))

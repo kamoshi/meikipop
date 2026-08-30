@@ -119,6 +119,7 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     ocr::hit_scan::register_python(&hit_scan_module)?;
     ocr_module.add_submodule(&hit_scan_module)?;
     ocr::providers::meikiocr::ocr::register_python(&meikiocr_module)?;
+    ocr::providers::meikiocr::provider::register_python(&meikiocr_module)?;
     ocr::providers::postprocessing::register_python(&postprocessing_module)?;
     providers_module.add_submodule(&meikiocr_module)?;
     providers_module.add_submodule(&postprocessing_module)?;
