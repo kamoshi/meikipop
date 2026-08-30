@@ -1,4 +1,4 @@
-use crate::ocr::interface::{BoundingBox, Paragraph, Word};
+use crate::ocr::interface::{paragraph_from_python, BoundingBox, Paragraph};
 use pyo3::prelude::*;
 
 pub const FURIGANA_VERTICAL_WIDTH_THRESHOLD: f64 = 0.65;
@@ -238,37 +238,6 @@ pub fn group_lines_into_paragraphs(lines: Vec<Paragraph>) -> Vec<Paragraph> {
     final_paragraphs
 }
 
-fn bounding_box_from_python(value: &Bound<'_, PyAny>) -> PyResult<BoundingBox> {
-    Ok(BoundingBox {
-        center_x: value.getattr("center_x")?.extract()?,
-        center_y: value.getattr("center_y")?.extract()?,
-        width: value.getattr("width")?.extract()?,
-        height: value.getattr("height")?.extract()?,
-    })
-}
-
-fn word_from_python(value: &Bound<'_, PyAny>) -> PyResult<Word> {
-    Ok(Word {
-        text: value.getattr("text")?.extract()?,
-        separator: value.getattr("separator")?.extract()?,
-        r#box: bounding_box_from_python(&value.getattr("box")?)?,
-    })
-}
-
-fn paragraph_from_python(value: &Bound<'_, PyAny>) -> PyResult<Paragraph> {
-    let mut words = Vec::new();
-    for word in value.getattr("words")?.try_iter()? {
-        words.push(word_from_python(&word?)?);
-    }
-
-    Ok(Paragraph {
-        full_text: value.getattr("full_text")?.extract()?,
-        words,
-        r#box: bounding_box_from_python(&value.getattr("box")?)?,
-        is_vertical: value.getattr("is_vertical")?.extract()?,
-    })
-}
-
 #[pyfunction(name = "group_lines_into_paragraphs")]
 fn py_group_lines_into_paragraphs(
     py: Python<'_>,
@@ -339,6 +308,7 @@ pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ocr::interface::Word;
 
     fn assert_close(actual: f64, expected: f64) {
         assert!(

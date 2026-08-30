@@ -45,3 +45,35 @@ impl Paragraph {
         }
     }
 }
+
+pub(crate) fn bounding_box_from_python(value: &Bound<'_, PyAny>) -> PyResult<BoundingBox> {
+    Ok(BoundingBox {
+        center_x: value.getattr("center_x")?.extract()?,
+        center_y: value.getattr("center_y")?.extract()?,
+        width: value.getattr("width")?.extract()?,
+        height: value.getattr("height")?.extract()?,
+    })
+}
+
+fn word_from_python(value: &Bound<'_, PyAny>) -> PyResult<Word> {
+    Ok(Word {
+        text: value.getattr("text")?.extract()?,
+        separator: value.getattr("separator")?.extract()?,
+        r#box: bounding_box_from_python(&value.getattr("box")?)?,
+    })
+}
+
+pub(crate) fn paragraph_from_python(value: &Bound<'_, PyAny>) -> PyResult<Paragraph> {
+    let mut words = Vec::new();
+    for word in value.getattr("words")?.try_iter()? {
+        words.push(word_from_python(&word?)?);
+    }
+
+    Ok(Paragraph {
+        full_text: value.getattr("full_text")?.extract()?,
+        words,
+        r#box: bounding_box_from_python(&value.getattr("box")?)?,
+        is_vertical: value.getattr("is_vertical")?.extract()?,
+    })
+}
+use pyo3::prelude::*;

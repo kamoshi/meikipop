@@ -99,6 +99,7 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let dictionary_module = PyModule::new(py, "dictionary")?;
     let deconjugator_module = PyModule::new(py, "deconjugator")?;
     let ocr_module = PyModule::new(py, "ocr")?;
+    let hit_scan_module = PyModule::new(py, "hit_scan")?;
     let providers_module = PyModule::new(py, "providers")?;
     let postprocessing_module = PyModule::new(py, "postprocessing")?;
 
@@ -111,6 +112,8 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     dictionary_module.add_submodule(&deconjugator_module)?;
     module.add_submodule(&dictionary_module)?;
 
+    ocr::hit_scan::register_python(&hit_scan_module)?;
+    ocr_module.add_submodule(&hit_scan_module)?;
     ocr::providers::postprocessing::register_python(&postprocessing_module)?;
     providers_module.add_submodule(&postprocessing_module)?;
     ocr_module.add_submodule(&providers_module)?;
@@ -125,6 +128,7 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         &deconjugator_module,
     )?;
     modules.set_item("meikipop_native.ocr", &ocr_module)?;
+    modules.set_item("meikipop_native.ocr.hit_scan", &hit_scan_module)?;
     modules.set_item("meikipop_native.ocr.providers", &providers_module)?;
     modules.set_item(
         "meikipop_native.ocr.providers.postprocessing",
