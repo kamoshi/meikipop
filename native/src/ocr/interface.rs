@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 ///
 /// Any type that implements this interface can be used by the application's
 /// OcrProcessor. This allows for easily swapping out different OCR backends.
-pub trait OcrProvider {
+pub trait OcrProvider: Send {
     /// A user-friendly name for this provider.
     fn name(&self) -> &'static str;
 
