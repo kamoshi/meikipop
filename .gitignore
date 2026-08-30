@@ -31,3 +31,7 @@ src/meikipop.egg-info/
 bundle-repo
 **.flatpak
 python3-deps.json
+
+
+.direnv/
+target/

@@ -2,6 +2,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes};
 
+pub mod dictionary;
 mod wayland_capture;
 use wayland_capture::WaylandCapture;
 
@@ -93,6 +94,28 @@ fn backend_name() -> &'static str {
 
 #[pymodule]
 fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let py = module.py();
+    let dictionary_module = PyModule::new(py, "dictionary")?;
+    let deconjugator_module = PyModule::new(py, "deconjugator")?;
+
+    deconjugator_module.add(
+        "MAX_DECONJ_ITERATIONS",
+        dictionary::deconjugator::MAX_DECONJ_ITERATIONS,
+    )?;
+    deconjugator_module.add_class::<dictionary::deconjugator::Form>()?;
+    deconjugator_module.add_class::<dictionary::deconjugator::Deconjugator>()?;
+    dictionary_module.add_submodule(&deconjugator_module)?;
+    module.add_submodule(&dictionary_module)?;
+
+    // PyModule::add_submodule exposes attributes, while import statements also
+    // require the fully-qualified modules to be present in sys.modules.
+    let modules = py.import("sys")?.getattr("modules")?;
+    modules.set_item("meikipop_native.dictionary", &dictionary_module)?;
+    modules.set_item(
+        "meikipop_native.dictionary.deconjugator",
+        &deconjugator_module,
+    )?;
+
     module.add_class::<WaylandCapture>()?;
     module.add_function(wrap_pyfunction!(backend_name, module)?)?;
     module.add_function(wrap_pyfunction!(crop_bgra, module)?)?;
