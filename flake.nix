@@ -2,9 +2,10 @@
   description = "Development shell for meikipop";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+  inputs.nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
-    { nixpkgs, ... }:
+    { nixpkgs, nixpkgs-unstable, ... }:
     let
       forAllLinuxSystems = nixpkgs.lib.genAttrs [
         "x86_64-linux"
@@ -16,6 +17,7 @@
         system:
         let
           pkgs = import nixpkgs { inherit system; };
+          unstablePkgs = import nixpkgs-unstable { inherit system; };
           python = pkgs.python312;
 
           pythonEnv = python.withPackages (
@@ -54,12 +56,19 @@
               pkgs.pipewire
 
               # Headers and pkg-config metadata used by gstreamer-rs.
+              pkgs.fontconfig.dev
               pkgs.gst_all_1.gstreamer.dev
               pkgs.gst_all_1.gst-plugins-base.dev
+              pkgs.libxkbcommon.dev
+              pkgs.wayland.dev
+              pkgs.xorg.libX11.dev
+              pkgs.xorg.libXcursor.dev
+              pkgs.xorg.libXi.dev
+              pkgs.xorg.libxcb.dev
 
               # Native-extension and general development tools.
-              pkgs.cargo
-              pkgs.clippy
+              unstablePkgs.cargo
+              unstablePkgs.clippy
               pkgs.llvmPackages.clang
               pkgs.llvmPackages.libclang
               pkgs.maturin
@@ -67,8 +76,8 @@
               pkgs.openssl.dev
               pkgs.pkg-config
               pkgs.rust-analyzer
-              pkgs.rustc
-              pkgs.rustfmt
+              unstablePkgs.rustc
+              unstablePkgs.rustfmt
               pkgs.ruff
               pkgs.uv
             ];
@@ -77,6 +86,14 @@
               export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
               export GST_PLUGIN_SYSTEM_PATH_1_0="${pipewireGstPlugin}''${GST_PLUGIN_SYSTEM_PATH_1_0:+:$GST_PLUGIN_SYSTEM_PATH_1_0}"
               export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+                pkgs.libxkbcommon
+                pkgs.wayland
+                pkgs.xorg.libX11
+                pkgs.xorg.libXcursor
+                pkgs.xorg.libXi
+                pkgs.xorg.libxcb
+              ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
               echo "meikipop development shell"
               echo "  Run: meikipop"

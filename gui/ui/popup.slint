@@ -1,0 +1,27 @@
+export component OcrPopup inherits Window {
+    in property <string> lookup-text: "日本語\nJapanese language";
+
+    width: 360px;
+    height: 120px;
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+
+    Rectangle {
+        background: #202124ee;
+        border-color: #555;
+        border-width: 1px;
+        border-radius: 8px;
+
+        Text {
+            x: 12px;
+            y: 10px;
+            width: parent.width - 24px;
+            height: parent.height - 20px;
+            text: root.lookup-text;
+            color: #f0f0f0;
+            font-size: 18px;
+            wrap: word-wrap;
+        }
+    }
+}

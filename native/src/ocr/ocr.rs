@@ -111,6 +111,12 @@ impl OcrProcessor {
         Ok(paragraph_count)
     }
 
+    pub fn scan_rgb(&mut self, image: &RgbImage) -> Result<usize, Box<dyn Error>> {
+        let image = mat_from_rgb_bytes(&image.data, image.width, image.height)
+            .map_err(|error| error.to_string())?;
+        self.scan(&image)
+    }
+
     pub fn hit_scan(&self, norm_x: f64, norm_y: f64) -> Option<String> {
         let paragraphs = self.last_ocr_result.as_deref()?;
         hit_scan::hit_scan(paragraphs, norm_x, norm_y)
