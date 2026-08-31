@@ -728,7 +728,7 @@ impl MeikiOcr {
                 }
 
                 if !is_overlap {
-                    log::debug!(
+                    log::trace!(
                         "  [NMS ACCEPT] '{}' (conf: {:.2}) at interval {:?}",
                         cand.character,
                         cand.conf,
@@ -737,7 +737,7 @@ impl MeikiOcr {
                     accepted_intervals.push(cand.interval);
                     accepted.push(cand);
                 } else {
-                    log::debug!(
+                    log::trace!(
                         "  [NMS SUPPRESS] '{}' (conf: {:.2}) at interval {:?} due to overlap",
                         cand.character,
                         cand.conf,
@@ -757,7 +757,7 @@ impl MeikiOcr {
                 .collect();
             let mut text: String = result_chars.iter().map(|item| item.character).collect();
             Self::_fix_swapped_pairs(&mut text, &mut result_chars);
-            log::debug!("--- FINAL TEXT BOX {orig_idx}: {text} ---");
+            log::trace!("--- FINAL TEXT BOX {orig_idx}: {text} ---");
             results[orig_idx] = OcrResult {
                 text,
                 chars: result_chars,

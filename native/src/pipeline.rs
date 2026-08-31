@@ -410,6 +410,15 @@ fn spawn_lookup_worker(
                     let result =
                         lookup_engine.lookup_cached(&lookup_string, max_lookup_length, show_kanji);
                     if !result.entries.is_empty() || result.kanji_entry.is_some() {
+                        log::debug!(
+                            "Sending lookup result at mouse ({}, {}) on monitor left={}, top={}, width={}, height={}",
+                            request.mouse_x,
+                            request.mouse_y,
+                            monitor.left,
+                            monitor.top,
+                            monitor.width,
+                            monitor.height
+                        );
                         if event_sender
                             .send(PipelineEvent::LookupResult {
                                 entries: result.entries,

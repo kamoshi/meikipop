@@ -155,17 +155,35 @@ fn process_pipeline_events(popup_weak: &slint::Weak<OcrPopup>, pipeline: &Pipeli
                 popup.set_has_error(false);
                 let _ = popup.show();
                 pipeline.set_popup_visible(true);
-                let popup_size = popup.window().size();
+                let scale_factor = popup.window().scale_factor();
+                let physical_size = popup.window().size();
+                let logical_width = (physical_size.width as f32 / scale_factor).round() as i32;
+                let logical_height = (physical_size.height as f32 / scale_factor).round() as i32;
+
                 let (x, y) = calculate_popup_position(
                     mouse_x,
                     mouse_y,
                     &monitor,
-                    popup_size.width as i32,
-                    popup_size.height as i32,
+                    logical_width,
+                    logical_height,
                 );
+
+                tracing::debug!(
+                    mouse_x,
+                    mouse_y,
+                    scale_factor,
+                    physical_width = physical_size.width,
+                    physical_height = physical_size.height,
+                    logical_width,
+                    logical_height,
+                    target_x = x,
+                    target_y = y,
+                    "Positioning popup window"
+                );
+
                 popup
                     .window()
-                    .set_position(slint::PhysicalPosition::new(x, y));
+                    .set_position(slint::LogicalPosition::new(x as f32, y as f32));
             }
             PipelineEvent::HidePopup => {
                 let _ = popup.hide();
@@ -177,7 +195,7 @@ fn process_pipeline_events(popup_weak: &slint::Weak<OcrPopup>, pipeline: &Pipeli
                 let _ = popup.show();
                 popup
                     .window()
-                    .set_position(slint::PhysicalPosition::new(80, 80));
+                    .set_position(slint::LogicalPosition::new(80.0, 80.0));
             }
         }
     }
