@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+fontdb = "0.23"
 meikipop-native = { path = "../native" }
 slint = { version = "=1.17.0", default-features = false, features = [
     "backend-winit-x11",
@@ -14,6 +15,9 @@ slint = { version = "=1.17.0", default-features = false, features = [
     "std",
     "system-tray",
 ] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+x11rb = "0.13"
 
 [build-dependencies]
 slint-build = "=1.17.0"

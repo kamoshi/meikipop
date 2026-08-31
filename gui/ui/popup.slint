@@ -1,27 +1,156 @@
-export component OcrPopup inherits Window {
-    in property <string> lookup-text: "日本語\nJapanese language";
+export struct FormattedEntry {
+    word: string,
+    reading: string,
+    deconjugation: string,
+    freq: string,
+    definitions: string,
+}
 
-    width: 360px;
-    height: 120px;
+export component OcrPopup inherits Window {
+    in property <string> ui-font-family: "";
+    in property <[FormattedEntry]> entries: [
+        {
+            word: "日本語",
+            reading: "にほんご",
+            deconjugation: "",
+            freq: "",
+            definitions: "(1) (n) Japanese (language)\n(2) (n) Japaneseness",
+        }
+    ];
+    in property <bool> has-kanji: false;
+    in property <string> kanji-character: "日";
+    in property <string> kanji-readings: "ニチ, ジツ, ひ, -び, -か";
+    in property <string> kanji-meanings: "day, sun, Japan, counter for days";
+    in property <string> error-text: "";
+    in property <bool> has-error: false;
+
+    width: 380px;
+    height: content.preferred-height;
     no-frame: true;
     always-on-top: true;
     background: transparent;
+    default-font-family: root.ui-font-family;
 
     Rectangle {
-        background: #202124ee;
-        border-color: #555;
+        background: #2e2e2ef5;
+        border-color: #555555;
         border-width: 1px;
         border-radius: 8px;
+        clip: true;
 
-        Text {
-            x: 12px;
-            y: 10px;
-            width: parent.width - 24px;
-            height: parent.height - 20px;
-            text: root.lookup-text;
-            color: #f0f0f0;
-            font-size: 18px;
-            wrap: word-wrap;
+        content := VerticalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            padding-top: 10px;
+            padding-bottom: 12px;
+            spacing: 8px;
+
+            if root.has-error : VerticalLayout {
+                Text {
+                    text: "MeikiPop Error";
+                    color: #ff8888;
+                    font-size: 15px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: root.error-text;
+                    color: #f0f0f0;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+            }
+
+            if !root.has-error : VerticalLayout {
+                spacing: 8px;
+
+                for entry[i] in root.entries : VerticalLayout {
+                    spacing: 3px;
+
+                    if i > 0 : Rectangle {
+                        height: 1px;
+                        background: #444444;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+
+                        Text {
+                            text: entry.word;
+                            color: #88d8ff;
+                            font-size: 18px;
+                        }
+
+                        if entry.reading != "" : Text {
+                            text: " [" + entry.reading + "]";
+                            color: #90ee90;
+                            font-size: 15px;
+                            vertical-alignment: center;
+                        }
+
+                        if entry.deconjugation != "" : Text {
+                            text: "(" + entry.deconjugation + ")";
+                            color: #aaaaaa;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+
+                        if entry.freq != "" : Text {
+                            text: "#" + entry.freq;
+                            color: #777777;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Text {
+                        text: entry.definitions;
+                        color: #f0f0f0;
+                        font-size: 14px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.has-kanji : Rectangle {
+                    background: #ffffff0a;
+                    border-color: #88d8ff55;
+                    border-width: 1px;
+                    border-radius: 6px;
+
+                    VerticalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        padding-top: 6px;
+                        padding-bottom: 6px;
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+
+                            Text {
+                                text: root.kanji-character;
+                                color: #88d8ff;
+                                font-size: 18px;
+                            }
+
+                            Text {
+                                text: "[" + root.kanji-readings + "]";
+                                color: #90ee90;
+                                font-size: 14px;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Text {
+                            text: root.kanji-meanings;
+                            color: #e0e0e0;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
         }
     }
 }

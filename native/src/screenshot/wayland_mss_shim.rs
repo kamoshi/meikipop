@@ -24,6 +24,8 @@ struct Frame {
     data: Arc<Vec<u8>>,
     width: usize,
     height: usize,
+    left: i32,
+    top: i32,
 }
 
 #[derive(Default)]
@@ -243,12 +245,15 @@ fn process_sample(sample: &gst::Sample) -> Result<Frame, String> {
         data: Arc::new(data),
         width,
         height,
+        left: 0,
+        top: 0,
     })
 }
 
 fn build_pipeline(
     pipewire_fd: i32,
     node_id: u32,
+    position: (i32, i32),
     shared: Arc<SharedCapture>,
 ) -> Result<gst::Pipeline, String> {
     gst::init().map_err(|error| format!("Failed to initialize GStreamer: {error}"))?;
@@ -294,7 +299,9 @@ fn build_pipeline(
                     .map_err(|_| "Could not pull GStreamer sample".to_owned())
                     .and_then(|sample| process_sample(&sample));
                 match result {
-                    Ok(frame) => {
+                    Ok(mut frame) => {
+                        frame.left = position.0;
+                        frame.top = position.1;
                         callback_shared.set_frame(frame);
                         Ok(gst::FlowSuccess::Ok)
                     }
@@ -363,6 +370,7 @@ fn run_capture(
     let pipeline = build_pipeline(
         portal.pipewire_fd.as_raw_fd(),
         portal.stream.pipe_wire_node_id(),
+        portal.stream.position().unwrap_or_default(),
         Arc::clone(&shared),
     )?;
     pipeline
@@ -502,8 +510,8 @@ impl MssWaylandShim {
 
         let frame = self.screencast.request_frame()?;
         let fake_monitor = Monitor {
-            top: 0,
-            left: 0,
+            top: frame.top,
+            left: frame.left,
             width: frame.width,
             height: frame.height,
         };
@@ -521,8 +529,8 @@ impl MssWaylandShim {
             frame.data.as_slice(),
             frame.width,
             frame.height,
-            monitor.left as i64,
-            monitor.top as i64,
+            (monitor.left - frame.left) as i64,
+            (monitor.top - frame.top) as i64,
             monitor.width as i64,
             monitor.height as i64,
         )?;

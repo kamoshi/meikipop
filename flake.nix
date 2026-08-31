@@ -57,6 +57,7 @@
 
               # Headers and pkg-config metadata used by gstreamer-rs.
               pkgs.fontconfig.dev
+              pkgs.noto-fonts-cjk-sans
               pkgs.gst_all_1.gstreamer.dev
               pkgs.gst_all_1.gst-plugins-base.dev
               pkgs.libxkbcommon.dev

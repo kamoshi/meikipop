@@ -102,9 +102,9 @@ struct MergedEntry {
 }
 
 #[derive(Clone, Debug)]
-struct CachedLookup {
-    entries: Vec<DictionaryEntry>,
-    kanji_entry: Option<KanjiEntry>,
+pub struct CachedLookup {
+    pub entries: Vec<DictionaryEntry>,
+    pub kanji_entry: Option<KanjiEntry>,
 }
 
 pub struct LookupEngine {
@@ -178,7 +178,7 @@ impl LookupEngine {
         self.kanji_entries.get(character)
     }
 
-    fn lookup_cached(
+    pub fn lookup_cached(
         &mut self,
         lookup_string: &str,
         max_lookup_length: usize,
