@@ -300,6 +300,7 @@ fn spawn_ocr_worker(
                     continue;
                 }
 
+                let ocr_start = std::time::Instant::now();
                 let result = (|| -> Result<Vec<Paragraph>, Box<dyn Error>> {
                     let image = screenshot.to_rgb()?;
                     ocr_processor.scan_rgb(&image)?;
@@ -308,6 +309,11 @@ fn spawn_ocr_worker(
 
                 match result {
                     Ok(paragraphs) => {
+                        log::info!(
+                            "OCR worker completed scan in {:?} (found {} text paragraph(s))",
+                            ocr_start.elapsed(),
+                            paragraphs.len()
+                        );
                         // Only suppress an identical frame after OCR succeeded.
                         last_raw_frame = Some(screenshot.raw);
                         if !send_while_running(&ocr_sender, paragraphs, &running) {

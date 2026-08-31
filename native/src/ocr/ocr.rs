@@ -98,7 +98,8 @@ impl OcrProcessor {
     }
 
     fn _load_provider_from_config(&mut self) -> Result<(), Box<dyn Error>> {
-        let configured_provider_name = DEFAULT_PROVIDER_NAME;
+        let env_provider = std::env::var("MEIKIPOP_OCR_PROVIDER").ok();
+        let configured_provider_name = env_provider.as_deref().unwrap_or(DEFAULT_PROVIDER_NAME);
         let default_provider_name = DEFAULT_PROVIDER_NAME;
 
         let mut provider_to_load_name = configured_provider_name;
@@ -139,12 +140,19 @@ impl OcrProcessor {
         // Rust providers are registered statically instead of discovered by
         // scanning Python packages.
         providers.push(DEFAULT_PROVIDER_NAME);
+        #[cfg(target_os = "macos")]
+        providers.push("apple_vision (macOS)");
+
         providers
     }
 
     fn _create_provider(provider_name: &str) -> Result<Box<dyn OcrProvider>, Box<dyn Error>> {
         match provider_name {
             DEFAULT_PROVIDER_NAME => Ok(Box::new(MeikiOcrProvider::new()?)),
+            #[cfg(target_os = "macos")]
+            "apple_vision (macOS)" => Ok(Box::new(
+                crate::ocr::providers::apple_vision::AppleVisionOcrProvider::new()?,
+            )),
             _ => Err(format!("Unknown OCR provider: '{provider_name}'").into()),
         }
     }
