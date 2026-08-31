@@ -1,4 +1,10 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+
 use crate::ocr::interface::{BoundingBox, Paragraph, paragraph_from_python};
+use crate::ocr::ocr::{OcrProcessor, PyOcrProcessor};
+use crate::utils::latest_queue::{LatestValueQueue, PyLatestValueQueue};
 use pyo3::prelude::*;
 
 fn is_in_box(point: (f64, f64), r#box: Option<&BoundingBox>) -> bool {
@@ -147,6 +153,205 @@ pub fn hit_scan(paragraphs: &[Paragraph], norm_x: f64, norm_y: f64) -> Option<St
     lookup_string
 }
 
+fn normalize_mouse_position(
+    mouse_pos: (i32, i32),
+    scan_geometry: (i32, i32, usize, usize),
+) -> Result<(f64, f64), String> {
+    let (mouse_x, mouse_y) = mouse_pos;
+    let (mouse_off_x, mouse_off_y, img_w, img_h) = scan_geometry;
+    if img_w == 0 || img_h == 0 {
+        return Err("cannot normalize mouse position against an empty scan geometry".to_owned());
+    }
+    let relative_x = mouse_x - mouse_off_x;
+    let relative_y = mouse_y - mouse_off_y;
+    let norm_x = relative_x as f64 / img_w as f64;
+    let norm_y = relative_y as f64 / img_h as f64;
+    Ok((norm_x, norm_y))
+}
+
+#[pyclass(name = "HitScanner")]
+pub struct PyHitScanner {
+    shared_state: Py<PyAny>,
+    input_loop: Py<PyAny>,
+    screen_manager: Py<PyAny>,
+    magpie_manager: Py<PyAny>,
+    logger: Py<PyAny>,
+    ocr_processor: Arc<Mutex<OcrProcessor>>,
+    hit_scan_queue: Arc<LatestValueQueue<Py<PyAny>>>,
+    lookup_queue: Arc<LatestValueQueue<Py<PyAny>>>,
+    worker_started: AtomicBool,
+}
+
+#[pymethods]
+impl PyHitScanner {
+    #[new]
+    fn new(
+        py: Python<'_>,
+        shared_state: Py<PyAny>,
+        input_loop: Py<PyAny>,
+        screen_manager: Py<PyAny>,
+        ocr_processor: PyRef<'_, PyOcrProcessor>,
+        magpie_manager: Py<PyAny>,
+        logger: Py<PyAny>,
+    ) -> PyResult<Self> {
+        let hit_scan_queue = extract_queue(py, &shared_state, "hit_scan_queue")?;
+        let lookup_queue = extract_queue(py, &shared_state, "lookup_queue")?;
+        Ok(Self {
+            shared_state,
+            input_loop,
+            screen_manager,
+            magpie_manager,
+            logger,
+            ocr_processor: Arc::clone(&ocr_processor.inner),
+            hit_scan_queue,
+            lookup_queue,
+            worker_started: AtomicBool::new(false),
+        })
+    }
+
+    fn start(&self, py: Python<'_>) -> PyResult<()> {
+        if self.worker_started.swap(true, Ordering::AcqRel) {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "threads can only be started once",
+            ));
+        }
+
+        let runtime = HitScannerRuntime {
+            shared_state: self.shared_state.clone_ref(py),
+            input_loop: self.input_loop.clone_ref(py),
+            screen_manager: self.screen_manager.clone_ref(py),
+            magpie_manager: self.magpie_manager.clone_ref(py),
+            logger: self.logger.clone_ref(py),
+            ocr_processor: Arc::clone(&self.ocr_processor),
+            hit_scan_queue: Arc::clone(&self.hit_scan_queue),
+            lookup_queue: Arc::clone(&self.lookup_queue),
+        };
+        thread::Builder::new()
+            .name("HitScanner".to_owned())
+            .spawn(move || runtime.run())
+            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+        Ok(())
+    }
+
+    fn hit_scan(&self) -> PyResult<Option<String>> {
+        scan_at_mouse(
+            &self.input_loop,
+            &self.screen_manager,
+            &self.magpie_manager,
+            &self.ocr_processor,
+        )
+    }
+}
+
+struct HitScannerRuntime {
+    shared_state: Py<PyAny>,
+    input_loop: Py<PyAny>,
+    screen_manager: Py<PyAny>,
+    magpie_manager: Py<PyAny>,
+    logger: Py<PyAny>,
+    ocr_processor: Arc<Mutex<OcrProcessor>>,
+    hit_scan_queue: Arc<LatestValueQueue<Py<PyAny>>>,
+    lookup_queue: Arc<LatestValueQueue<Py<PyAny>>>,
+}
+
+impl HitScannerRuntime {
+    fn run(self) {
+        python_log(&self.logger, "debug", "HitScanner thread started.");
+        while python_running(&self.shared_state) {
+            self.hit_scan_queue.wait();
+            self.hit_scan_queue.get_with(|_| ());
+            if !python_running(&self.shared_state) {
+                break;
+            }
+            python_log(&self.logger, "debug", "HitScanner: Triggered");
+
+            match scan_at_mouse(
+                &self.input_loop,
+                &self.screen_manager,
+                &self.magpie_manager,
+                &self.ocr_processor,
+            ) {
+                Ok(hit_scan_result) => Python::attach(|py| {
+                    let value = match hit_scan_result {
+                        Some(value) => value.into_pyobject(py).map(Bound::into_any),
+                        None => Ok(py.None().into_bound(py)),
+                    };
+                    match value {
+                        Ok(value) => self.lookup_queue.put(value.unbind()),
+                        Err(error) => python_log(
+                            &self.logger,
+                            "error",
+                            &format!("Could not create hit scan result: {error}"),
+                        ),
+                    }
+                }),
+                Err(error) => python_log(
+                    &self.logger,
+                    "error",
+                    &format!(
+                        "An unexpected error occurred in the hit scan loop. Continuing: {error}"
+                    ),
+                ),
+            }
+        }
+        python_log(&self.logger, "debug", "HitScanner thread stopped.");
+    }
+}
+
+fn scan_at_mouse(
+    input_loop: &Py<PyAny>,
+    screen_manager: &Py<PyAny>,
+    magpie_manager: &Py<PyAny>,
+    ocr_processor: &Arc<Mutex<OcrProcessor>>,
+) -> PyResult<Option<String>> {
+    let (mouse_pos, scan_geometry) = Python::attach(|py| -> PyResult<_> {
+        let mouse_pos = input_loop.call_method0(py, "get_mouse_pos")?;
+        let mouse_pos =
+            magpie_manager.call_method1(py, "transform_raw_to_visual", (mouse_pos, 1))?;
+        let mouse_pos = mouse_pos.extract(py)?;
+        let scan_geometry = screen_manager
+            .call_method0(py, "get_scan_geometry")?
+            .extract(py)?;
+        Ok((mouse_pos, scan_geometry))
+    })?;
+    let (norm_x, norm_y) = normalize_mouse_position(mouse_pos, scan_geometry)
+        .map_err(pyo3::exceptions::PyZeroDivisionError::new_err)?;
+    let processor = ocr_processor.lock().map_err(|_| {
+        pyo3::exceptions::PyRuntimeError::new_err("OCR processor lock was poisoned")
+    })?;
+    Ok(processor.hit_scan(norm_x, norm_y))
+}
+
+fn extract_queue(
+    py: Python<'_>,
+    shared_state: &Py<PyAny>,
+    name: &str,
+) -> PyResult<Arc<LatestValueQueue<Py<PyAny>>>> {
+    let queue = shared_state.getattr(py, name)?;
+    let queue: PyRef<'_, PyLatestValueQueue> = queue.extract(py)?;
+    Ok(Arc::clone(&queue.inner))
+}
+
+fn python_running(shared_state: &Py<PyAny>) -> bool {
+    Python::attach(|py| {
+        shared_state
+            .getattr(py, "running")
+            .and_then(|running| running.extract(py))
+            .unwrap_or_else(|error| {
+                log::error!("Could not read shared_state.running: {error}");
+                false
+            })
+    })
+}
+
+fn python_log(logger: &Py<PyAny>, level: &str, message: &str) {
+    Python::attach(|py| {
+        if let Err(error) = logger.call_method1(py, level, (message,)) {
+            log::error!("Could not forward hit scan log message to Python: {error}");
+        }
+    });
+}
+
 #[pyfunction(name = "hit_scan")]
 fn py_hit_scan(
     paragraphs: &Bound<'_, PyAny>,
@@ -163,6 +368,7 @@ fn py_hit_scan(
 
 pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(py_hit_scan, module)?)?;
+    module.add_class::<PyHitScanner>()?;
     Ok(())
 }
 
@@ -183,6 +389,19 @@ mod tests {
     #[test]
     fn missing_box_never_contains_point() {
         assert!(!is_in_box((0.5, 0.5), None));
+    }
+
+    #[test]
+    fn normalizes_mouse_position_against_scan_geometry() {
+        assert_eq!(
+            normalize_mouse_position((150, 100), (100, 50, 200, 100)).unwrap(),
+            (0.25, 0.5)
+        );
+    }
+
+    #[test]
+    fn rejects_an_empty_scan_geometry() {
+        assert!(normalize_mouse_position((0, 0), (0, 0, 0, 100)).is_err());
     }
 
     #[test]

@@ -1,11 +1,16 @@
 use crate::dictionary::customdict;
 use crate::dictionary::deconjugator::{Deconjugator, Form};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyTuple};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+use crate::utils::latest_queue::{LatestValueQueue, PyLatestValueQueue};
 
 pub const DEFAULT_FREQ: i64 = 999_999;
 pub const CACHE_SIZE: usize = 500;
@@ -102,7 +107,6 @@ struct CachedLookup {
     kanji_entry: Option<KanjiEntry>,
 }
 
-#[pyclass(module = "meikipop_native.dictionary.lookup")]
 pub struct LookupEngine {
     entries: HashMap<i64, Vec<Sense>>,
     lookup_map: HashMap<String, Vec<MapEntry>>,
@@ -427,17 +431,27 @@ impl From<RawMapEntry> for MapEntry {
     }
 }
 
+#[pyclass(name = "LookupEngine", module = "meikipop_native.dictionary.lookup")]
+pub struct PyLookupEngine {
+    inner: Arc<Mutex<LookupEngine>>,
+}
+
 #[pymethods]
-impl LookupEngine {
+impl PyLookupEngine {
     #[staticmethod]
     #[pyo3(name = "open")]
     fn open(pickle_path: PathBuf, max_dict_entries: usize) -> PyResult<Self> {
-        Self::open_paths(&pickle_path, max_dict_entries)
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+        Ok(Self {
+            inner: Arc::new(Mutex::new(
+                LookupEngine::open_paths(&pickle_path, max_dict_entries)
+                    .map_err(pyo3::exceptions::PyRuntimeError::new_err)?,
+            )),
+        })
     }
 
-    fn validate(&self) -> (usize, Vec<String>) {
-        (self.validation_issues, self.validation_warnings.clone())
+    fn validate(&self) -> PyResult<(usize, Vec<String>)> {
+        let engine = self.lock()?;
+        Ok((engine.validation_issues, engine.validation_warnings.clone()))
     }
 
     #[pyo3(name = "lookup")]
@@ -449,7 +463,9 @@ impl LookupEngine {
         show_kanji: bool,
     ) -> PyResult<Bound<'py, PyList>> {
         let results = PyList::empty(py);
-        let result = self.lookup_cached(lookup_string, max_lookup_length, show_kanji);
+        let result = self
+            .lock()?
+            .lookup_cached(lookup_string, max_lookup_length, show_kanji);
         for entry in result.entries {
             results.append(entry)?;
         }
@@ -460,13 +476,205 @@ impl LookupEngine {
     }
 
     #[pyo3(name = "clear_cache")]
-    fn py_clear_cache(&mut self) {
-        self.clear_cache();
+    fn py_clear_cache(&self) -> PyResult<()> {
+        self.lock()?.clear_cache();
+        Ok(())
     }
 }
 
+impl PyLookupEngine {
+    fn lock(&self) -> PyResult<std::sync::MutexGuard<'_, LookupEngine>> {
+        self.inner.lock().map_err(|_| {
+            pyo3::exceptions::PyRuntimeError::new_err("lookup engine lock was poisoned")
+        })
+    }
+}
+
+#[pyclass(name = "LookupWorker")]
+pub struct PyLookupWorker {
+    engine: Arc<Mutex<LookupEngine>>,
+    shared_state: Py<PyAny>,
+    popup_window: Py<PyAny>,
+    config: Py<PyAny>,
+    logger: Py<PyAny>,
+    lookup_queue: Arc<LatestValueQueue<Py<PyAny>>>,
+    worker_started: AtomicBool,
+}
+
+#[pymethods]
+impl PyLookupWorker {
+    #[new]
+    fn new(
+        py: Python<'_>,
+        shared_state: Py<PyAny>,
+        popup_window: Py<PyAny>,
+        engine: PyRef<'_, PyLookupEngine>,
+        config: Py<PyAny>,
+        logger: Py<PyAny>,
+    ) -> PyResult<Self> {
+        let queue = shared_state.getattr(py, "lookup_queue")?;
+        let queue: PyRef<'_, PyLatestValueQueue> = queue.extract(py)?;
+        Ok(Self {
+            engine: Arc::clone(&engine.inner),
+            shared_state,
+            popup_window,
+            config,
+            logger,
+            lookup_queue: Arc::clone(&queue.inner),
+            worker_started: AtomicBool::new(false),
+        })
+    }
+
+    fn start(&self, py: Python<'_>) -> PyResult<()> {
+        if self.worker_started.swap(true, Ordering::AcqRel) {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "threads can only be started once",
+            ));
+        }
+
+        let runtime = LookupWorkerRuntime {
+            engine: Arc::clone(&self.engine),
+            shared_state: self.shared_state.clone_ref(py),
+            popup_window: self.popup_window.clone_ref(py),
+            config: self.config.clone_ref(py),
+            logger: self.logger.clone_ref(py),
+            lookup_queue: Arc::clone(&self.lookup_queue),
+        };
+        thread::Builder::new()
+            .name("Lookup".to_owned())
+            .spawn(move || runtime.run())
+            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+        Ok(())
+    }
+}
+
+struct LookupWorkerRuntime {
+    engine: Arc<Mutex<LookupEngine>>,
+    shared_state: Py<PyAny>,
+    popup_window: Py<PyAny>,
+    config: Py<PyAny>,
+    logger: Py<PyAny>,
+    lookup_queue: Arc<LatestValueQueue<Py<PyAny>>>,
+}
+
+impl LookupWorkerRuntime {
+    fn run(self) {
+        python_log(&self.logger, "debug", "Lookup thread started.");
+        let mut last_hit_result: Option<String> = None;
+        while python_running(&self.shared_state) {
+            self.lookup_queue.wait();
+            let hit_result = Python::attach(|py| {
+                self.lookup_queue
+                    .get_with(|value| value.and_then(|value| value.extract(py).ok()))
+            });
+            if !python_running(&self.shared_state) {
+                break;
+            }
+            python_log(&self.logger, "debug", "Lookup: Triggered");
+
+            // skip lookup if hit_result didnt change
+            if hit_result == last_hit_result {
+                continue;
+            }
+            last_hit_result = hit_result;
+
+            let result = self.lookup_and_update_popup(last_hit_result.as_deref());
+            if let Err(error) = result {
+                python_log(
+                    &self.logger,
+                    "error",
+                    &format!(
+                        "An unexpected error occurred in the lookup loop. Continuing: {error}"
+                    ),
+                );
+            }
+        }
+        python_log(&self.logger, "debug", "Lookup thread stopped.");
+    }
+
+    fn lookup_and_update_popup(&self, lookup_string: Option<&str>) -> PyResult<()> {
+        let lookup_result = if let Some(lookup_string) = lookup_string {
+            python_log(
+                &self.logger,
+                "info",
+                &format!("Looking up: {lookup_string}"),
+            ); // keep at info level so people know whats up
+
+            let (max_lookup_length, show_kanji) = Python::attach(|py| -> PyResult<_> {
+                Ok((
+                    self.config.getattr(py, "max_lookup_length")?.extract(py)?,
+                    self.config.getattr(py, "show_kanji")?.extract(py)?,
+                ))
+            })?;
+            let result = self
+                .engine
+                .lock()
+                .map_err(|_| {
+                    pyo3::exceptions::PyRuntimeError::new_err("lookup engine lock was poisoned")
+                })?
+                .lookup_cached(lookup_string, max_lookup_length, show_kanji);
+            Some(result)
+        } else {
+            None
+        };
+
+        Python::attach(|py| {
+            let value = match lookup_result {
+                Some(result) => lookup_result_to_python(py, result)?.into_any(),
+                None => py.None().into_bound(py),
+            };
+            self.popup_window
+                .call_method1(py, "set_latest_data", (value,))?;
+            Ok(())
+        })
+    }
+}
+
+fn lookup_result_to_python<'py>(
+    py: Python<'py>,
+    result: CachedLookup,
+) -> PyResult<Bound<'py, PyList>> {
+    let module = py.import("meikipop.dictionary.lookup")?;
+    let dictionary_entry = module.getattr("DictionaryEntry")?;
+    let kanji_entry = module.getattr("KanjiEntry")?;
+    let results = PyList::empty(py);
+
+    for entry in result.entries {
+        let process = PyTuple::new(py, &entry.deconjugation_process)?;
+        let kwargs = entry.into_pyobject(py)?;
+        kwargs.set_item("deconjugation_process", process)?;
+        results.append(dictionary_entry.call((), Some(&kwargs))?)?;
+    }
+    if let Some(entry) = result.kanji_entry {
+        let kwargs = entry.into_pyobject(py)?;
+        results.append(kanji_entry.call((), Some(&kwargs))?)?;
+    }
+    Ok(results)
+}
+
+fn python_running(shared_state: &Py<PyAny>) -> bool {
+    Python::attach(|py| {
+        shared_state
+            .getattr(py, "running")
+            .and_then(|running| running.extract(py))
+            .unwrap_or_else(|error| {
+                log::error!("Could not read shared_state.running: {error}");
+                false
+            })
+    })
+}
+
+fn python_log(logger: &Py<PyAny>, level: &str, message: &str) {
+    Python::attach(|py| {
+        if let Err(error) = logger.call_method1(py, level, (message,)) {
+            log::error!("Could not forward lookup log message to Python: {error}");
+        }
+    });
+}
+
 pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<LookupEngine>()?;
+    module.add_class::<PyLookupEngine>()?;
+    module.add_class::<PyLookupWorker>()?;
     Ok(())
 }
 

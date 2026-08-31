@@ -16,6 +16,7 @@ from meikipop.ocr.hit_scan import HitScanner
 from meikipop.ocr.ocr import OcrProcessor
 from meikipop.screenshot.screenmanager import ScreenManager
 from meikipop_native.runtime import Event, RLock
+from meikipop_native.ocr.processor import OcrImageQueue
 from meikipop_native.utils.latest_queue import LatestValueQueue
 
 
@@ -36,7 +37,7 @@ class SharedState:
 
         # events and queues
         self.screenshot_trigger_event = Event()
-        self.ocr_queue = LatestValueQueue()
+        self.ocr_queue = OcrImageQueue()
         self.hit_scan_queue = LatestValueQueue()
         self.lookup_queue = LatestValueQueue()
 

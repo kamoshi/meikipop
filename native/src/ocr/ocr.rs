@@ -15,8 +15,67 @@ use crate::ocr::hit_scan;
 use crate::ocr::interface::{OcrProvider, Paragraph};
 use crate::ocr::providers::meikiocr::ocr::mat_from_rgb_bytes;
 use crate::ocr::providers::meikiocr::provider::MeikiOcrProvider;
+use crate::screenshot::interface::RgbImage;
+use crate::utils::latest_queue::LatestValueQueue;
 
 const DEFAULT_PROVIDER_NAME: &str = "meikiocr (local)";
+
+#[pyclass(name = "OcrImageQueue")]
+pub struct PyOcrImageQueue {
+    pub(crate) inner: Arc<LatestValueQueue<Option<RgbImage>>>,
+}
+
+#[pymethods]
+impl PyOcrImageQueue {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(LatestValueQueue::default()),
+        }
+    }
+
+    fn put(&self, item: &Bound<'_, PyAny>) -> PyResult<()> {
+        if item.is_none() {
+            self.inner.put(None);
+            return Ok(());
+        }
+
+        // Non-Wayland screenshot capture still hands us a PIL image. Convert it
+        // at the queue boundary so the OCR worker always receives typed RGB data.
+        let image_rgb = item.call_method1("convert", ("RGB",))?;
+        let data = image_rgb.call_method0("tobytes")?.extract()?;
+        let width = image_rgb.getattr("width")?.extract()?;
+        let height = image_rgb.getattr("height")?.extract()?;
+        self.inner.put(Some(RgbImage {
+            data,
+            width,
+            height,
+        }));
+        Ok(())
+    }
+
+    fn get(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        py.detach(|| self.inner.wait());
+        let image = self.inner.get_with(|image| image.cloned().flatten());
+        let Some(image) = image else {
+            return Ok(py.None());
+        };
+
+        let pil_image = py.import("PIL.Image")?.call_method1(
+            "frombytes",
+            (
+                "RGB",
+                (image.width, image.height),
+                PyBytes::new(py, &image.data),
+            ),
+        )?;
+        Ok(pil_image.unbind())
+    }
+
+    fn trigger(&self) {
+        self.inner.trigger();
+    }
+}
 
 pub struct OcrProcessor {
     pub ocr_backend: Option<Box<dyn OcrProvider>>,
@@ -156,7 +215,7 @@ impl OcrProcessor {
 
 #[pyclass(name = "OcrProcessor")]
 pub struct PyOcrProcessor {
-    inner: Arc<Mutex<OcrProcessor>>,
+    pub(crate) inner: Arc<Mutex<OcrProcessor>>,
     worker_started: AtomicBool,
 }
 
@@ -219,12 +278,17 @@ impl PyOcrProcessor {
         }
 
         let inner = Arc::clone(&self.inner);
+        let ocr_queue = {
+            let queue = shared_state.getattr(py, "ocr_queue")?;
+            let queue: PyRef<'_, PyOcrImageQueue> = queue.extract(py)?;
+            Arc::clone(&queue.inner)
+        };
         let shared_state = shared_state.clone_ref(py);
         let config = config.clone_ref(py);
         let logger = logger.clone_ref(py);
         thread::Builder::new()
             .name("OcrProcessor".to_owned())
-            .spawn(move || run_worker(inner, shared_state, config, logger))
+            .spawn(move || run_worker(inner, ocr_queue, shared_state, config, logger))
             .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
         Ok(())
     }
@@ -238,40 +302,32 @@ impl PyOcrProcessor {
 
 fn run_worker(
     inner: Arc<Mutex<OcrProcessor>>,
+    ocr_queue: Arc<LatestValueQueue<Option<RgbImage>>>,
     shared_state: Py<PyAny>,
     config: Py<PyAny>,
     logger: Py<PyAny>,
 ) {
     python_log(&logger, "debug", "OCR thread started.");
     while python_bool_attribute(&shared_state, "running") {
-        let result = Python::attach(|py| -> PyResult<()> {
-            let screenshot = shared_state
-                .getattr(py, "ocr_queue")?
-                .call_method0(py, "get")?;
-            if !shared_state.getattr(py, "running")?.extract::<bool>(py)? {
-                return Ok(());
-            }
+        ocr_queue.wait();
+        let screenshot = ocr_queue.get_with(|image| image.cloned().flatten());
+        if !python_bool_attribute(&shared_state, "running") {
+            break;
+        }
+
+        let result = (|| -> Result<(), String> {
+            let screenshot = screenshot.ok_or_else(|| "OCR queue returned no image".to_owned())?;
 
             python_log(&logger, "debug", "OCR: Triggered!");
 
             let start_time = Instant::now();
-            let image_rgb = screenshot.call_method1(py, "convert", ("RGB",))?;
-            let image_bytes = image_rgb.call_method0(py, "tobytes")?;
-            let image_bytes: Vec<u8> = image_bytes.extract(py)?;
-            let width = image_rgb.getattr(py, "width")?.extract(py)?;
-            let height = image_rgb.getattr(py, "height")?.extract(py)?;
-            let image = mat_from_rgb_bytes(&image_bytes, width, height)?;
-            let (paragraph_count, provider_name) = py
-                .detach(|| {
-                    let mut processor = inner
-                        .lock()
-                        .map_err(|_| "OCR processor lock was poisoned".to_owned())?;
-                    let paragraph_count =
-                        processor.scan(&image).map_err(|error| error.to_string())?;
-                    let provider_name = processor.provider_name().unwrap_or("Unknown OCR provider");
-                    Ok::<_, String>((paragraph_count, provider_name))
-                })
-                .map_err(PyRuntimeError::new_err)?;
+            let image = mat_from_rgb_bytes(&screenshot.data, screenshot.width, screenshot.height)
+                .map_err(|error| error.to_string())?;
+            let mut processor = inner
+                .lock()
+                .map_err(|_| "OCR processor lock was poisoned".to_owned())?;
+            let paragraph_count = processor.scan(&image).map_err(|error| error.to_string())?;
+            let provider_name = processor.provider_name().unwrap_or("Unknown OCR provider");
             python_log(
                 &logger,
                 "info",
@@ -282,11 +338,15 @@ fn run_worker(
             );
             // todo keep last ocr result?
 
-            shared_state
-                .getattr(py, "hit_scan_queue")?
-                .call_method0(py, "trigger")?;
+            Python::attach(|py| {
+                shared_state
+                    .getattr(py, "hit_scan_queue")?
+                    .call_method0(py, "trigger")
+                    .map(|_| ())
+            })
+            .map_err(|error| error.to_string())?;
             Ok(())
-        });
+        })();
 
         if let Err(error) = result {
             python_log(
@@ -349,6 +409,7 @@ impl PyOcrProcessor {
 
 pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyOcrProcessor>()?;
+    module.add_class::<PyOcrImageQueue>()?;
     Ok(())
 }
 
@@ -375,5 +436,35 @@ mod tests {
         assert_eq!(processor.scan(&image).unwrap(), 2);
         assert_eq!(processor.last_ocr_result.as_ref().unwrap().len(), 2);
         assert!(processor.hit_scan(0.15, 0.28).is_some());
+    }
+
+    #[test]
+    fn typed_ocr_queue_keeps_only_the_latest_image() {
+        let queue = PyOcrImageQueue::new();
+        queue.inner.put(Some(RgbImage {
+            data: vec![1, 2, 3],
+            width: 1,
+            height: 1,
+        }));
+        queue.inner.put(Some(RgbImage {
+            data: vec![4, 5, 6],
+            width: 1,
+            height: 1,
+        }));
+
+        queue.inner.wait();
+        let image = queue
+            .inner
+            .get_with(|image| image.cloned().flatten())
+            .unwrap();
+        assert_eq!(image.data, [4, 5, 6]);
+    }
+
+    #[test]
+    fn typed_ocr_queue_carries_the_shutdown_sentinel() {
+        let queue = PyOcrImageQueue::new();
+        queue.inner.put(None);
+        queue.inner.wait();
+        assert_eq!(queue.inner.get_with(|image| image.cloned()), Some(None));
     }
 }

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, List
 
 from meikipop.config.config import config, MAX_DICT_ENTRIES, DICT_PATH
-from meikipop_native.dictionary.lookup import LookupEngine
+from meikipop_native.dictionary.lookup import LookupEngine, LookupWorker
 
 logger = logging.getLogger(__name__)
 
@@ -48,29 +48,15 @@ class Lookup(threading.Thread):
         else:
             logger.warning(f"Dictionary validation found {issues} issue(s) — "
                            f"some entries may display incorrectly.")
+        self._native = LookupWorker(
+            shared_state, popup_window, self.lookup_engine, config, logger
+        )
 
     def clear_cache(self):
         self.lookup_engine.clear_cache()
 
     def run(self):
-        logger.debug("Lookup thread started.")
-        while self.shared_state.running:
-            try:
-                hit_result = self.shared_state.lookup_queue.get()
-                if not self.shared_state.running:
-                    break
-                logger.debug("Lookup: Triggered")
-
-                # skip lookup if hit_result didnt change
-                if hit_result == self.last_hit_result:
-                    continue
-                self.last_hit_result = hit_result
-
-                lookup_result = self.lookup(self.last_hit_result) if self.last_hit_result else None
-                self.popup_window.set_latest_data(lookup_result)
-            except Exception:
-                logger.exception("An unexpected error occurred in the lookup loop. Continuing...")
-        logger.debug("Lookup thread stopped.")
+        self._native.start()
 
     def lookup(self, lookup_string: str) -> List:
         if not lookup_string:

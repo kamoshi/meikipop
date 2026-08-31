@@ -6,8 +6,8 @@ use std::thread;
 use std::time::Duration;
 
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 
+use crate::ocr::ocr::PyOcrImageQueue;
 use crate::screenshot::interface::{Monitor, RgbImage, ScreenshotBackend};
 use crate::screenshot::screenmanager::{ScreenManager, ScreenManagerConfig, ScreenManagerRuntime};
 use crate::screenshot::wayland_mss_shim::MssWaylandShim;
@@ -16,6 +16,7 @@ struct PythonScreenManagerRuntime {
     shared_state: Py<PyAny>,
     input_loop: Py<PyAny>,
     config: Py<PyAny>,
+    ocr_queue: Arc<crate::utils::latest_queue::LatestValueQueue<Option<RgbImage>>>,
 }
 
 impl PythonScreenManagerRuntime {
@@ -103,27 +104,7 @@ impl ScreenManagerRuntime for PythonScreenManagerRuntime {
     }
 
     fn put_ocr(&mut self, image: RgbImage) {
-        Python::attach(|py| {
-            let result = (|| -> PyResult<()> {
-                let pil_image = py.import("PIL.Image")?.call_method1(
-                    "frombytes",
-                    (
-                        "RGB",
-                        (image.width, image.height),
-                        PyBytes::new(py, &image.data),
-                    ),
-                )?;
-                self.shared_state.getattr(py, "ocr_queue")?.call_method1(
-                    py,
-                    "put",
-                    (pil_image,),
-                )?;
-                Ok(())
-            })();
-            if let Err(error) = result {
-                log::error!("Could not put the screenshot into the OCR queue: {error}");
-            }
-        });
+        self.ocr_queue.put(Some(image));
     }
 
     fn sleep(&mut self, interval: Duration) {
@@ -206,6 +187,11 @@ impl PyScreenManager {
             shared_state: self.shared_state.clone_ref(py),
             input_loop: self.input_loop.clone_ref(py),
             config: self.config.clone_ref(py),
+            ocr_queue: {
+                let queue = self.shared_state.getattr(py, "ocr_queue")?;
+                let queue: PyRef<'_, PyOcrImageQueue> = queue.extract(py)?;
+                Arc::clone(&queue.inner)
+            },
         };
 
         thread::Builder::new()

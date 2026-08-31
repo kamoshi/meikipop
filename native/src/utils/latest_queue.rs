@@ -1,6 +1,6 @@
 // meikipop/utils/latest_queue.rs
 
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use pyo3::prelude::*;
 
@@ -64,7 +64,7 @@ impl<T> LatestValueQueue<T> {
 
 #[pyclass(name = "LatestValueQueue")]
 pub struct PyLatestValueQueue {
-    inner: LatestValueQueue<Py<PyAny>>,
+    pub(crate) inner: Arc<LatestValueQueue<Py<PyAny>>>,
 }
 
 #[pymethods]
@@ -72,7 +72,7 @@ impl PyLatestValueQueue {
     #[new]
     fn new() -> Self {
         Self {
-            inner: LatestValueQueue::default(),
+            inner: Arc::new(LatestValueQueue::default()),
         }
     }
 
