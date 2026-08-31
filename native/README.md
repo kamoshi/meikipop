@@ -32,24 +32,9 @@ The conservative Rust backend currently preserves the existing behavior:
 - the most recent frame retained as tightly packed BGRA/BGRx;
 - the existing MSS-shaped Python adapter and crop coordinates.
 
-Portal stream position and logical-size metadata are retained by the native
-capture object, but are not applied yet. This leaves room for a later,
-separately tested multi-monitor and fractional-scaling implementation without
-changing this first parity pass.
-
-The first migrated operation is the Wayland screenshot crop. It accepts a
-tightly packed BGRA frame and a `(left, top, width, height)` rectangle:
-
-```python
-cropped, width, height = meikipop_native.crop_bgra(
-    frame,
-    full_width,
-    full_height,
-    (left, top, width, height),
-)
-```
-
-`cropped` is a `bytearray`, matching the buffer type expected by `mss`.
+Portal stream position and logical-size metadata are logged, but are not
+applied yet. This leaves room for a later, separately tested multi-monitor and
+fractional-scaling implementation without changing this first parity pass.
 
 Useful Rust checks:
 

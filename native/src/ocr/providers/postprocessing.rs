@@ -1,5 +1,4 @@
-use crate::ocr::interface::{BoundingBox, Paragraph, paragraph_from_python};
-use pyo3::prelude::*;
+use crate::ocr::interface::{BoundingBox, Paragraph};
 
 pub const FURIGANA_VERTICAL_WIDTH_THRESHOLD: f64 = 0.65;
 pub const FURIGANA_HORIZONTAL_HEIGHT_THRESHOLD: f64 = 0.65;
@@ -236,73 +235,6 @@ pub fn group_lines_into_paragraphs(lines: Vec<Paragraph>) -> Vec<Paragraph> {
 
     // logger.debug(f"Regrouped {len(lines)} raw OCR lines into {len(final_paragraphs)} paragraphs.")
     final_paragraphs
-}
-
-#[pyfunction(name = "group_lines_into_paragraphs")]
-fn py_group_lines_into_paragraphs(
-    py: Python<'_>,
-    lines: &Bound<'_, PyAny>,
-) -> PyResult<Vec<Py<PyAny>>> {
-    let mut rust_lines = Vec::new();
-    for line in lines.try_iter()? {
-        rust_lines.push(paragraph_from_python(&line?)?);
-    }
-
-    let interface = py.import("meikipop.ocr.interface")?;
-    let bounding_box_class = interface.getattr("BoundingBox")?;
-    let word_class = interface.getattr("Word")?;
-    let paragraph_class = interface.getattr("Paragraph")?;
-    let mut results = Vec::new();
-
-    for paragraph in group_lines_into_paragraphs(rust_lines) {
-        let bounding_box = bounding_box_class.call1((
-            paragraph.r#box.center_x,
-            paragraph.r#box.center_y,
-            paragraph.r#box.width,
-            paragraph.r#box.height,
-        ))?;
-
-        let mut words = Vec::new();
-        for word in paragraph.words {
-            let word_box = bounding_box_class.call1((
-                word.r#box.center_x,
-                word.r#box.center_y,
-                word.r#box.width,
-                word.r#box.height,
-            ))?;
-            words.push(
-                word_class
-                    .call1((word.text, word.separator, word_box))?
-                    .unbind(),
-            );
-        }
-
-        results.push(
-            paragraph_class
-                .call1((
-                    paragraph.full_text,
-                    words,
-                    bounding_box,
-                    paragraph.is_vertical,
-                ))?
-                .unbind(),
-        );
-    }
-
-    Ok(results)
-}
-
-pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add(
-        "FURIGANA_VERTICAL_WIDTH_THRESHOLD",
-        FURIGANA_VERTICAL_WIDTH_THRESHOLD,
-    )?;
-    module.add(
-        "FURIGANA_HORIZONTAL_HEIGHT_THRESHOLD",
-        FURIGANA_HORIZONTAL_HEIGHT_THRESHOLD,
-    )?;
-    module.add_function(wrap_pyfunction!(py_group_lines_into_paragraphs, module)?)?;
-    Ok(())
 }
 
 #[cfg(test)]

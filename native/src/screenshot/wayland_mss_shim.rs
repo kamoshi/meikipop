@@ -9,6 +9,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::crop_bgra_impl;
+use crate::screenshot::interface::{Monitor, Screenshot, ScreenshotBackend};
 use ashpd::desktop::screencast::{Screencast, SelectSourcesOptions, SourceType, Stream};
 use ashpd::desktop::{PersistMode, Session};
 use gstreamer as gst;
@@ -16,14 +18,6 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 use gstreamer_video::VideoFrameExt;
-use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
-use pyo3::prelude::*;
-use pyo3::types::PyByteArray;
-
-use crate::crop_bgra_impl;
-use crate::screenshot::interface::{Monitor, Screenshot, ScreenshotBackend};
-
-type PythonStreamInfo = (u32, Option<(i32, i32)>, Option<(i32, i32)>);
 
 #[derive(Clone)]
 struct Frame {
@@ -32,17 +26,9 @@ struct Frame {
     height: usize,
 }
 
-#[derive(Clone, Debug)]
-struct StreamInfo {
-    node_id: u32,
-    position: Option<(i32, i32)>,
-    size: Option<(i32, i32)>,
-}
-
 #[derive(Default)]
 struct CaptureState {
     frame: Option<Frame>,
-    stream_info: Option<StreamInfo>,
     error: Option<String>,
     stopped: bool,
 }
@@ -58,11 +44,6 @@ impl SharedCapture {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.frame = Some(frame);
         self.changed.notify_all();
-    }
-
-    fn set_stream_info(&self, stream_info: StreamInfo) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.stream_info = Some(stream_info);
     }
 
     fn fail(&self, error: String) {
@@ -372,11 +353,12 @@ fn run_capture(
     token_path: PathBuf,
 ) -> Result<(), String> {
     let portal = async_io::block_on(open_portal(&token_path))?;
-    shared.set_stream_info(StreamInfo {
-        node_id: portal.stream.pipe_wire_node_id(),
-        position: portal.stream.position(),
-        size: portal.stream.size(),
-    });
+    log::debug!(
+        "Selected PipeWire stream {} at {:?} with size {:?}",
+        portal.stream.pipe_wire_node_id(),
+        portal.stream.position(),
+        portal.stream.size()
+    );
 
     let pipeline = build_pipeline(
         portal.pipewire_fd.as_raw_fd(),
@@ -421,62 +403,9 @@ fn run_capture(
 }
 
 /// A conservative one-stream Wayland ScreenCast capture backend.
-#[pyclass]
 pub struct WaylandCapture {
     shared: Arc<SharedCapture>,
     stop: Arc<AtomicBool>,
-}
-
-#[pymethods]
-impl WaylandCapture {
-    #[new]
-    fn new(token_path: String) -> PyResult<Self> {
-        Self::start(token_path).map_err(PyRuntimeError::new_err)
-    }
-
-    fn wait_ready(&self, py: Python<'_>, timeout_seconds: f64) -> PyResult<()> {
-        if !timeout_seconds.is_finite() || timeout_seconds <= 0.0 {
-            return Err(PyValueError::new_err(
-                "timeout_seconds must be a positive finite number",
-            ));
-        }
-        let timeout = Duration::from_secs_f64(timeout_seconds);
-        match py.detach(|| self.wait_until_ready(timeout)) {
-            Ok(()) => Ok(()),
-            Err(WaitError::Failed(error)) => Err(PyRuntimeError::new_err(error)),
-            Err(WaitError::TimedOut) => Err(PyTimeoutError::new_err(
-                "Timed out waiting for the first Wayland frame",
-            )),
-        }
-    }
-
-    fn request_frame<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> Option<(Bound<'py, PyByteArray>, usize, usize)> {
-        let frame = self.latest_frame()?;
-        Some((
-            PyByteArray::new(py, frame.data.as_slice()),
-            frame.width,
-            frame.height,
-        ))
-    }
-
-    fn stream_info(&self) -> Option<PythonStreamInfo> {
-        let info = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .stream_info
-            .clone()?;
-        Some((info.node_id, info.position, info.size))
-    }
-
-    fn stop(&self) {
-        self.stop.store(true, Ordering::Release);
-        self.shared.changed.notify_all();
-    }
 }
 
 impl WaylandCapture {

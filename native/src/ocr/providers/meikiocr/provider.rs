@@ -1,12 +1,9 @@
 // meikipop/ocr/providers/meikiocr/provider.rs
 
 use opencv::core::{Mat, MatTraitConst};
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 
 // Import the MeikiOCR library
-use super::ocr::{MeikiOcr, OcrResult, mat_from_rgb_bytes};
+use super::ocr::{MeikiOcr, OcrResult};
 
 // Import the "contract" classes from your application's interface
 use crate::ocr::interface::{BoundingBox, OcrProvider, Paragraph, Word};
@@ -154,95 +151,6 @@ fn is_japanese_character(character: char) -> bool {
         character,
         '\u{3040}'..='\u{309f}' | '\u{30a0}'..='\u{30ff}' | '\u{4e00}'..='\u{9faf}'
     )
-}
-
-#[pyclass(name = "MeikiOcrProvider")]
-pub struct PyMeikiOcrProvider {
-    inner: MeikiOcrProvider,
-}
-
-#[pymethods]
-impl PyMeikiOcrProvider {
-    #[new]
-    fn new() -> PyResult<Self> {
-        Ok(Self {
-            inner: MeikiOcrProvider::new()
-                .map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
-        })
-    }
-
-    #[getter]
-    fn active_provider(&self) -> &str {
-        &self.inner.ocr_client.active_provider
-    }
-
-    fn scan(
-        &mut self,
-        py: Python<'_>,
-        image: &Bound<'_, PyBytes>,
-        width: usize,
-        height: usize,
-    ) -> PyResult<Vec<Py<PyAny>>> {
-        let image = mat_from_rgb_bytes(image.as_bytes(), width, height)?;
-        let paragraphs = self
-            .inner
-            .scan(&image)
-            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
-        paragraphs_to_python(py, paragraphs)
-    }
-}
-
-pub(crate) fn paragraphs_to_python(
-    py: Python<'_>,
-    paragraphs: Vec<Paragraph>,
-) -> PyResult<Vec<Py<PyAny>>> {
-    let interface = py.import("meikipop.ocr.interface")?;
-    let bounding_box_class = interface.getattr("BoundingBox")?;
-    let word_class = interface.getattr("Word")?;
-    let paragraph_class = interface.getattr("Paragraph")?;
-    let mut results = Vec::new();
-
-    for paragraph in paragraphs {
-        let bounding_box = bounding_box_class.call1((
-            paragraph.r#box.center_x,
-            paragraph.r#box.center_y,
-            paragraph.r#box.width,
-            paragraph.r#box.height,
-        ))?;
-
-        let mut words = Vec::new();
-        for word in paragraph.words {
-            let word_box = bounding_box_class.call1((
-                word.r#box.center_x,
-                word.r#box.center_y,
-                word.r#box.width,
-                word.r#box.height,
-            ))?;
-            words.push(
-                word_class
-                    .call1((word.text, word.separator, word_box))?
-                    .unbind(),
-            );
-        }
-
-        results.push(
-            paragraph_class
-                .call1((
-                    paragraph.full_text,
-                    words,
-                    bounding_box,
-                    paragraph.is_vertical,
-                ))?
-                .unbind(),
-        );
-    }
-
-    Ok(results)
-}
-
-pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyMeikiOcrProvider>()?;
-    Ok(())
 }
 
 #[cfg(test)]

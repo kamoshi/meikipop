@@ -12,7 +12,6 @@ use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::value::Tensor;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
 use unicode_general_category::GeneralCategory;
 
 type MeikiResult<T> = Result<T, Box<dyn Error>>;
@@ -118,52 +117,6 @@ pub struct MeikiOcr {
     vrec_session: Session,
     pub active_provider: String,
     max_batch_size: usize,
-}
-
-#[pyclass(name = "MeikiOCR")]
-pub struct PyMeikiOcr {
-    inner: MeikiOcr,
-}
-
-#[pymethods]
-impl PyMeikiOcr {
-    #[new]
-    #[pyo3(signature = (provider=None, max_batch_size=8))]
-    fn new(provider: Option<&str>, max_batch_size: usize) -> PyResult<Self> {
-        Ok(Self {
-            inner: MeikiOcr::new(provider, max_batch_size)
-                .map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
-        })
-    }
-
-    #[getter]
-    fn active_provider(&self) -> &str {
-        &self.inner.active_provider
-    }
-
-    #[pyo3(signature = (image, width, height, det_threshold=0.5, rec_threshold=0.1, punct_conf_factor=1.0))]
-    fn run_ocr(
-        &mut self,
-        py: Python<'_>,
-        image: &Bound<'_, PyBytes>,
-        width: usize,
-        height: usize,
-        det_threshold: f32,
-        rec_threshold: f32,
-        punct_conf_factor: f32,
-    ) -> PyResult<Vec<Py<PyAny>>> {
-        let image = mat_from_rgb_bytes(image.as_bytes(), width, height)?;
-        let results = self
-            .inner
-            .run_ocr(&image, det_threshold, rec_threshold, punct_conf_factor)
-            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
-        results_to_python(py, results)
-    }
-}
-
-pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyMeikiOcr>()?;
-    Ok(())
 }
 
 impl MeikiOcr {
@@ -870,27 +823,6 @@ pub(crate) fn mat_from_rgb_bytes(bytes: &[u8], width: usize, height: usize) -> P
         .map_err(|error| PyRuntimeError::new_err(error.to_string()))?
         .copy_from_slice(bytes);
     Ok(image)
-}
-
-fn results_to_python(py: Python<'_>, results: Vec<OcrResult>) -> PyResult<Vec<Py<PyAny>>> {
-    let mut python_results = Vec::with_capacity(results.len());
-    for result in results {
-        let line = PyDict::new(py);
-        line.set_item("text", result.text)?;
-        line.set_item("is_vertical", result.is_vertical)?;
-
-        let mut chars = Vec::with_capacity(result.chars.len());
-        for recognized_char in result.chars {
-            let char_info = PyDict::new(py);
-            char_info.set_item("char", recognized_char.character.to_string())?;
-            char_info.set_item("bbox", recognized_char.bbox)?;
-            char_info.set_item("conf", recognized_char.conf)?;
-            chars.push(char_info.unbind());
-        }
-        line.set_item("chars", chars)?;
-        python_results.push(line.into_any().unbind());
-    }
-    Ok(python_results)
 }
 
 fn resize_pad_to_chw(

@@ -1,9 +1,5 @@
-use pyo3::exceptions::PyValueError;
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PySet, PyTuple};
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub const MAX_DECONJ_ITERATIONS: usize = 10;
 
@@ -13,13 +9,6 @@ pub const MAX_DECONJ_ITERATIONS: usize = 10;
 enum OneOrMany<T> {
     One(T),
     Many(Vec<T>),
-}
-
-fn extract_one_or_many(value: &Bound<'_, PyAny>) -> PyResult<OneOrMany<String>> {
-    if let Ok(value) = value.extract::<String>() {
-        return Ok(OneOrMany::One(value));
-    }
-    Ok(OneOrMany::Many(value.extract()?))
 }
 
 impl<T> OneOrMany<T> {
@@ -44,88 +33,11 @@ pub struct Rule {
     detail: String,
 }
 
-impl Rule {
-    fn from_python(rule: &Bound<'_, PyDict>) -> PyResult<Self> {
-        let extract_one_or_many = |key| {
-            rule.get_item(key)?
-                .map(|value| extract_one_or_many(&value))
-                .transpose()
-        };
-
-        Ok(Self {
-            rule_type: rule
-                .get_item("type")?
-                .map(|value| value.extract())
-                .transpose()?,
-            dec_end: extract_one_or_many("dec_end")?,
-            con_end: extract_one_or_many("con_end")?,
-            dec_tag: extract_one_or_many("dec_tag")?,
-            con_tag: extract_one_or_many("con_tag")?,
-            detail: rule
-                .get_item("detail")?
-                .map(|value| value.extract())
-                .transpose()?
-                .unwrap_or_default(),
-        })
-    }
-}
-
-#[pyclass(
-    module = "meikipop_native.dictionary.deconjugator",
-    frozen,
-    skip_from_py_object
-)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Form {
     pub text: String,
     pub process: Vec<String>,
     pub tags: Vec<String>,
-}
-
-#[pymethods]
-impl Form {
-    #[new]
-    #[pyo3(signature = (text, process=Vec::new(), tags=Vec::new()))]
-    fn py_new(text: String, process: Vec<String>, tags: Vec<String>) -> Self {
-        Self {
-            text,
-            process,
-            tags,
-        }
-    }
-
-    #[getter]
-    fn text(&self) -> &str {
-        &self.text
-    }
-
-    #[getter]
-    fn process<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, &self.process)
-    }
-
-    #[getter]
-    fn tags<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, &self.tags)
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "Form(text={:?}, process={:?}, tags={:?})",
-            self.text, self.process, self.tags
-        )
-    }
-
-    fn __hash__(&self) -> isize {
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
-        let hash = hasher.finish() as isize;
-        if hash == -1 { -2 } else { hash }
-    }
-
-    fn __eq__(&self, other: &Self) -> bool {
-        self == other
-    }
 }
 
 impl Form {
@@ -146,38 +58,9 @@ impl Form {
     }
 }
 
-#[pyclass(
-    module = "meikipop_native.dictionary.deconjugator",
-    skip_from_py_object
-)]
 #[derive(Clone, Debug)]
 pub struct Deconjugator {
     rules: Vec<Rule>,
-}
-
-#[pymethods]
-impl Deconjugator {
-    #[new]
-    fn py_new(rules: &Bound<'_, PyAny>) -> PyResult<Self> {
-        // Let Python's JSON encoder traverse the incoming list of dictionaries;
-        // the core parser remains the single rule-validation boundary.
-        let json = rules
-            .py()
-            .import("json")?
-            .call_method1("dumps", (rules,))?
-            .extract::<String>()?;
-        Self::from_json(&json).map_err(|error| PyValueError::new_err(error.to_string()))
-    }
-
-    #[pyo3(name = "deconjugate")]
-    fn py_deconjugate(&self, py: Python<'_>, text: &str) -> PyResult<Py<PySet>> {
-        let forms = self
-            .deconjugate(text)
-            .into_iter()
-            .map(|form| Py::new(py, form))
-            .collect::<PyResult<Vec<_>>>()?;
-        Ok(PySet::new(py, &forms)?.unbind())
-    }
 }
 
 impl Deconjugator {
@@ -195,20 +78,6 @@ impl Deconjugator {
             .map(serde_json::from_value)
             .collect::<serde_json::Result<Vec<_>>>()?;
         Ok(Self::new(rules))
-    }
-
-    /// Parse the upstream Python format, ignoring non-dictionary entries just
-    /// as the Python constructor ignores values that are not dictionaries.
-    pub fn from_python(rules: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let mut parsed_rules = Vec::new();
-        for rule in rules.try_iter()? {
-            let rule = rule?;
-            let Ok(rule) = rule.cast::<PyDict>() else {
-                continue;
-            };
-            parsed_rules.push(Rule::from_python(rule)?);
-        }
-        Ok(Self::new(parsed_rules))
     }
 
     pub fn deconjugate(&self, text: &str) -> HashSet<Form> {

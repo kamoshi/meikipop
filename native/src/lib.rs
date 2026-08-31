@@ -1,13 +1,10 @@
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyByteArray, PyBytes};
 
 pub mod dictionary;
 pub mod ocr;
 pub mod runtime;
 pub mod screenshot;
 pub mod utils;
-use screenshot::wayland_mss_shim::WaylandCapture;
 
 fn crop_bgra_impl(
     frame: &[u8],
@@ -62,33 +59,6 @@ fn crop_bgra_impl(
     Ok((output, output_width, output_height))
 }
 
-/// Crop a tightly packed BGRA frame using MeikiPop's existing edge semantics.
-#[pyfunction]
-fn crop_bgra<'py>(
-    py: Python<'py>,
-    frame: &Bound<'py, PyAny>,
-    full_width: usize,
-    full_height: usize,
-    rect: (i64, i64, i64, i64),
-) -> PyResult<(Bound<'py, PyByteArray>, usize, usize)> {
-    let slice: &[u8] = if let Ok(bytes) = frame.cast::<PyBytes>() {
-        bytes.as_bytes()
-    } else if let Ok(bytearray) = frame.cast::<PyByteArray>() {
-        unsafe { bytearray.as_bytes() }
-    } else {
-        return Err(PyValueError::new_err(
-            "frame must be a bytes or bytearray object",
-        ));
-    };
-
-    let (left, top, width, height) = rect;
-    let (cropped, width, height) =
-        crop_bgra_impl(slice, full_width, full_height, left, top, width, height)
-            .map_err(PyValueError::new_err)?;
-
-    Ok((PyByteArray::new(py, &cropped), width, height))
-}
-
 /// Minimal proof that a Rust extension can be called from MeikiPop's Python.
 #[pyfunction]
 fn backend_name() -> &'static str {
@@ -99,28 +69,16 @@ fn backend_name() -> &'static str {
 fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = module.py();
     let dictionary_module = PyModule::new(py, "dictionary")?;
-    let deconjugator_module = PyModule::new(py, "deconjugator")?;
     let lookup_module = PyModule::new(py, "lookup")?;
     let ocr_module = PyModule::new(py, "ocr")?;
     let ocr_processor_module = PyModule::new(py, "processor")?;
     let hit_scan_module = PyModule::new(py, "hit_scan")?;
-    let providers_module = PyModule::new(py, "providers")?;
-    let dummy_module = PyModule::new(py, "dummy")?;
-    let meikiocr_module = PyModule::new(py, "meikiocr")?;
-    let postprocessing_module = PyModule::new(py, "postprocessing")?;
     let runtime_module = PyModule::new(py, "runtime")?;
     let screenshot_module = PyModule::new(py, "screenshot")?;
     let utils_module = PyModule::new(py, "utils")?;
     let latest_queue_module = PyModule::new(py, "latest_queue")?;
 
-    deconjugator_module.add(
-        "MAX_DECONJ_ITERATIONS",
-        dictionary::deconjugator::MAX_DECONJ_ITERATIONS,
-    )?;
-    deconjugator_module.add_class::<dictionary::deconjugator::Form>()?;
-    deconjugator_module.add_class::<dictionary::deconjugator::Deconjugator>()?;
     dictionary::lookup::register_python(&lookup_module)?;
-    dictionary_module.add_submodule(&deconjugator_module)?;
     dictionary_module.add_submodule(&lookup_module)?;
     module.add_submodule(&dictionary_module)?;
 
@@ -128,14 +86,6 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     ocr::ocr::register_python(&ocr_processor_module)?;
     ocr_module.add_submodule(&hit_scan_module)?;
     ocr_module.add_submodule(&ocr_processor_module)?;
-    ocr::providers::dummy::provider::register_python(&dummy_module)?;
-    ocr::providers::meikiocr::ocr::register_python(&meikiocr_module)?;
-    ocr::providers::meikiocr::provider::register_python(&meikiocr_module)?;
-    ocr::providers::postprocessing::register_python(&postprocessing_module)?;
-    providers_module.add_submodule(&dummy_module)?;
-    providers_module.add_submodule(&meikiocr_module)?;
-    providers_module.add_submodule(&postprocessing_module)?;
-    ocr_module.add_submodule(&providers_module)?;
     module.add_submodule(&ocr_module)?;
 
     runtime::register_python(&runtime_module)?;
@@ -150,29 +100,16 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     // require the fully-qualified modules to be present in sys.modules.
     let modules = py.import("sys")?.getattr("modules")?;
     modules.set_item("meikipop_native.dictionary", &dictionary_module)?;
-    modules.set_item(
-        "meikipop_native.dictionary.deconjugator",
-        &deconjugator_module,
-    )?;
     modules.set_item("meikipop_native.dictionary.lookup", &lookup_module)?;
     modules.set_item("meikipop_native.ocr", &ocr_module)?;
     modules.set_item("meikipop_native.ocr.processor", &ocr_processor_module)?;
     modules.set_item("meikipop_native.ocr.hit_scan", &hit_scan_module)?;
-    modules.set_item("meikipop_native.ocr.providers", &providers_module)?;
-    modules.set_item("meikipop_native.ocr.providers.dummy", &dummy_module)?;
-    modules.set_item("meikipop_native.ocr.providers.meikiocr", &meikiocr_module)?;
-    modules.set_item(
-        "meikipop_native.ocr.providers.postprocessing",
-        &postprocessing_module,
-    )?;
     modules.set_item("meikipop_native.runtime", &runtime_module)?;
     modules.set_item("meikipop_native.screenshot", &screenshot_module)?;
     modules.set_item("meikipop_native.utils", &utils_module)?;
     modules.set_item("meikipop_native.utils.latest_queue", &latest_queue_module)?;
 
-    module.add_class::<WaylandCapture>()?;
     module.add_function(wrap_pyfunction!(backend_name, module)?)?;
-    module.add_function(wrap_pyfunction!(crop_bgra, module)?)?;
     Ok(())
 }
 

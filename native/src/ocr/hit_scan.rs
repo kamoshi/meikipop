@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::ocr::interface::{BoundingBox, Paragraph, paragraph_from_python};
+use crate::ocr::interface::{BoundingBox, Paragraph};
 use crate::ocr::ocr::{OcrProcessor, PyOcrProcessor};
 use crate::utils::latest_queue::{LatestValueQueue, PyLatestValueQueue};
 use pyo3::prelude::*;
@@ -352,22 +352,7 @@ fn python_log(logger: &Py<PyAny>, level: &str, message: &str) {
     });
 }
 
-#[pyfunction(name = "hit_scan")]
-fn py_hit_scan(
-    paragraphs: &Bound<'_, PyAny>,
-    norm_x: f64,
-    norm_y: f64,
-) -> PyResult<Option<String>> {
-    let mut rust_paragraphs = Vec::new();
-    for paragraph in paragraphs.try_iter()? {
-        rust_paragraphs.push(paragraph_from_python(&paragraph?)?);
-    }
-
-    Ok(hit_scan(&rust_paragraphs, norm_x, norm_y))
-}
-
 pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_function(wrap_pyfunction!(py_hit_scan, module)?)?;
     module.add_class::<PyHitScanner>()?;
     Ok(())
 }

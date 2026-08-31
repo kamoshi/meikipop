@@ -1,11 +1,7 @@
 // meikipop/ocr/providers/dummy/provider.rs
 
-use pyo3::exceptions::PyValueError;
-use pyo3::prelude::*;
-
 // The "contract" classes that a new provider MUST use for its return value.
 use crate::ocr::interface::{BoundingBox, OcrProvider, Paragraph, Word};
-use crate::ocr::providers::meikiocr::provider::paragraphs_to_python;
 
 /// A template for creating new OCR providers.
 ///
@@ -202,28 +198,6 @@ struct MockLine<'a> {
     text: &'static str,
     bbox: PixelBox,
     words: &'a [MockWord],
-}
-
-#[pyclass(name = "DummyProvider")]
-pub struct PyDummyProvider;
-
-#[pymethods]
-impl PyDummyProvider {
-    #[new]
-    fn new() -> Self {
-        Self
-    }
-
-    fn scan(&self, py: Python<'_>, width: usize, height: usize) -> PyResult<Vec<Py<PyAny>>> {
-        let paragraphs = DummyProvider::scan(width, height).map_err(PyValueError::new_err)?;
-        paragraphs_to_python(py, paragraphs)
-    }
-}
-
-pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add("NAME", DummyProvider::NAME)?;
-    module.add_class::<PyDummyProvider>()?;
-    Ok(())
 }
 
 #[cfg(test)]

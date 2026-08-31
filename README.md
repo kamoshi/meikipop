@@ -38,7 +38,7 @@ just download, unpack and start the executable binary. no python installation re
 
 ### recommended: install via pypi
 
-if you already have python 3.10+ installed, this is the most flexible option that lets you run directly from source, enables you to edit the program and lets you add your own custom ocr providers. 
+if you already have python 3.10+ installed, this is the most flexible option that lets you run directly from source and enables you to edit the program.
 
 ```bash
 #... activate your environment if any
@@ -98,7 +98,7 @@ here are some tips and recommendations:
 2.  the first time you run the app in `region` mode, you will be prompted to select an area of your screen to scan.
 3.  move your mouse over any japanese text on your screen.
 4.  a popup with dictionary entries will appear.
-5.  **right-click the system tray icon** to open the settings, reselect the scan region, change the ocr provider or quit the application.
+5.  **right-click the system tray icon** to open the settings, reselect the scan region or quit the application.
 
 ## configuration
 
@@ -109,35 +109,10 @@ changes are saved to a platform-specific user data directory which contains `con
 - linux: `~/.config/meikipop/`
 - macos: `~/Library/Application Support/meikipop/`
 
-## using alternative ocr backends...
+## ocr backend
 
-meikipop's architecture allows you to choose whatever ocr suits your use case best:
-- meikiocr (default/local): possibly the fastest local ocr worth using on cpu and can run even faster on nvidia gpus. primarily designed for video games with horizontal text. poor accuracy for vertical text.
-- google lens (remote): high accuracy, but requires an internet connection and has higher latency then the local options.
-- chrome screen ai (local): alternative local ocr worth checking out if meikiocr does not fit your use case. requires additional setup ([instructions](https://github.com/rtr46/meikipop/releases/tag/v1.10.0))
-- owocr: owocr lets you choose from even more ocr backends (see below)
-- custom ocr provider: if you are running from source it is very simple to integrate any ocr provider on your own (see below) 
-
-### ...via owocr provider
-
-owocr lets you run any relevant ocr engine and lets meikipop use it. just run a local [owocr](https://github.com/AuroraWright/owocr/tree/master/owocr) instance and select the owocr ocr provider from meikipop's system tray menu.
-
-make sure you:
-
-* use owocr 1.15.0 or newer
-* enable reading from and writing to websockets
-* choose the json output format
-* and use an ocr backend that supports coordinates (most do)
-    ```bash
-    pip install -U "owocr>=1.15"
-    owocr -r websocket -w websocket -of json -e glens # replace glens with your favorite owocr backend
-    ```
-
-### ...via custom ocr provider
-
-you can develop your own ocr provider. to get started, you can copy the `dummy` provider and use it as a template.
-
-for a complete guide, see: [how to create a custom ocr provider](docs/CUSTOM_OCR_PROVIDER.md)
+meikipop currently uses the native meikiocr backend. it is designed for
+japanese video-game text and runs locally on the cpu.
 
 ## building your own dictionary (optional)
 
@@ -161,5 +136,4 @@ meikipop import-yomitan-dict-text dict1.zip dict2.zip
 ## license
 
 meikipop is licensed under the GNU General Public License v3.0. see the `LICENSE` file for the full license text.
-
 

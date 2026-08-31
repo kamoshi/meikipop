@@ -20,16 +20,13 @@
 
           pythonEnv = python.withPackages (
             ps: with ps; [
-              betterproto
               lxml
               mss
               pillow
               platformdirs
-              protobuf
               pynput
               pyqt6
               requests
-              websockets
               xlib
 
               # Development tools.
