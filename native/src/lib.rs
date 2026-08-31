@@ -1,8 +1,6 @@
-use pyo3::prelude::*;
-
 pub mod dictionary;
 pub mod ocr;
-pub mod runtime;
+pub mod pipeline;
 pub mod screenshot;
 pub mod utils;
 
@@ -57,60 +55,6 @@ fn crop_bgra_impl(
     }
 
     Ok((output, output_width, output_height))
-}
-
-/// Minimal proof that a Rust extension can be called from MeikiPop's Python.
-#[pyfunction]
-fn backend_name() -> &'static str {
-    "pyo3"
-}
-
-#[pymodule]
-fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let py = module.py();
-    let dictionary_module = PyModule::new(py, "dictionary")?;
-    let lookup_module = PyModule::new(py, "lookup")?;
-    let ocr_module = PyModule::new(py, "ocr")?;
-    let ocr_processor_module = PyModule::new(py, "processor")?;
-    let hit_scan_module = PyModule::new(py, "hit_scan")?;
-    let runtime_module = PyModule::new(py, "runtime")?;
-    let screenshot_module = PyModule::new(py, "screenshot")?;
-    let utils_module = PyModule::new(py, "utils")?;
-    let latest_queue_module = PyModule::new(py, "latest_queue")?;
-
-    dictionary::lookup::register_python(&lookup_module)?;
-    dictionary_module.add_submodule(&lookup_module)?;
-    module.add_submodule(&dictionary_module)?;
-
-    ocr::hit_scan::register_python(&hit_scan_module)?;
-    ocr::ocr::register_python(&ocr_processor_module)?;
-    ocr_module.add_submodule(&hit_scan_module)?;
-    ocr_module.add_submodule(&ocr_processor_module)?;
-    module.add_submodule(&ocr_module)?;
-
-    runtime::register_python(&runtime_module)?;
-    module.add_submodule(&runtime_module)?;
-    screenshot::python::register_python(&screenshot_module)?;
-    module.add_submodule(&screenshot_module)?;
-    utils::latest_queue::register_python(&latest_queue_module)?;
-    utils_module.add_submodule(&latest_queue_module)?;
-    module.add_submodule(&utils_module)?;
-
-    // PyModule::add_submodule exposes attributes, while import statements also
-    // require the fully-qualified modules to be present in sys.modules.
-    let modules = py.import("sys")?.getattr("modules")?;
-    modules.set_item("meikipop_native.dictionary", &dictionary_module)?;
-    modules.set_item("meikipop_native.dictionary.lookup", &lookup_module)?;
-    modules.set_item("meikipop_native.ocr", &ocr_module)?;
-    modules.set_item("meikipop_native.ocr.processor", &ocr_processor_module)?;
-    modules.set_item("meikipop_native.ocr.hit_scan", &hit_scan_module)?;
-    modules.set_item("meikipop_native.runtime", &runtime_module)?;
-    modules.set_item("meikipop_native.screenshot", &screenshot_module)?;
-    modules.set_item("meikipop_native.utils", &utils_module)?;
-    modules.set_item("meikipop_native.utils.latest_queue", &latest_queue_module)?;
-
-    module.add_function(wrap_pyfunction!(backend_name, module)?)?;
-    Ok(())
 }
 
 #[cfg(test)]

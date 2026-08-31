@@ -23,7 +23,10 @@ import zipfile
 from collections import defaultdict
 from typing import Optional
 
-from meikipop.utils.paths import paths
+try:
+    from .paths import paths
+except ImportError:
+    from paths import paths
 
 DATA_DIR          = 'data'
 DEFAULT_OUTPUT = paths.dictionary_path

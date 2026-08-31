@@ -1,8 +1,6 @@
 // meikipop/utils/latest_queue.rs
 
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-
-use pyo3::prelude::*;
+use std::sync::{Condvar, Mutex, MutexGuard};
 
 struct QueueState<T> {
     value: Option<T>,
@@ -61,42 +59,6 @@ impl<T> LatestValueQueue<T> {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 }
-
-#[pyclass(name = "LatestValueQueue")]
-pub struct PyLatestValueQueue {
-    pub(crate) inner: Arc<LatestValueQueue<Py<PyAny>>>,
-}
-
-#[pymethods]
-impl PyLatestValueQueue {
-    #[new]
-    fn new() -> Self {
-        Self {
-            inner: Arc::new(LatestValueQueue::default()),
-        }
-    }
-
-    fn put(&self, item: Py<PyAny>) {
-        self.inner.put(item);
-    }
-
-    fn get(&self, py: Python<'_>) -> Py<PyAny> {
-        py.detach(|| self.inner.wait());
-        self.inner
-            .get_with(|value| value.map(|value| value.clone_ref(py)))
-            .unwrap_or_else(|| py.None())
-    }
-
-    fn trigger(&self) {
-        self.inner.trigger();
-    }
-}
-
-pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyLatestValueQueue>()?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

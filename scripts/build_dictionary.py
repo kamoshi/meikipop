@@ -19,7 +19,10 @@ import xml.etree.ElementTree as StdET
 import requests
 from lxml import etree
 
-from meikipop.utils.paths import paths
+try:
+    from .paths import paths
+except ImportError:
+    from paths import paths
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────

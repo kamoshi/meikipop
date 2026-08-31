@@ -172,7 +172,7 @@ pub fn validate(
       - A map entry reached via a kanji-containing key must not have
         written_form=None (that would render as an invisible entry)
 
-    The first four invariants are enforced when PyO3 extracts each Python
+    The first four invariants are enforced when deserializing each
     tuple into MapEntry, before LookupEngine can be constructed.
     */
     let mut issues = 0;

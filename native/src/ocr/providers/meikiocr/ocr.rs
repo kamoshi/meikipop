@@ -10,8 +10,6 @@ use opencv::core::{self, Mat, MatTraitConst, MatTraitManual, Rect, Size, Vec3b};
 use opencv::imgproc;
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::value::Tensor;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
-use pyo3::prelude::*;
 use unicode_general_category::GeneralCategory;
 
 type MeikiResult<T> = Result<T, Box<dyn Error>>;
@@ -794,21 +792,20 @@ fn is_punctuation(character: char) -> bool {
     )
 }
 
-pub(crate) fn mat_from_rgb_bytes(bytes: &[u8], width: usize, height: usize) -> PyResult<Mat> {
+pub(crate) fn mat_from_rgb_bytes(bytes: &[u8], width: usize, height: usize) -> MeikiResult<Mat> {
     let expected_len = width
         .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(3))
-        .ok_or_else(|| PyValueError::new_err("image dimensions are too large"))?;
+        .ok_or("image dimensions are too large")?;
     if width == 0 || height == 0 {
-        return Err(PyValueError::new_err(
-            "image dimensions must be greater than zero",
-        ));
+        return Err("image dimensions must be greater than zero".into());
     }
     if bytes.len() != expected_len {
-        return Err(PyValueError::new_err(format!(
+        return Err(format!(
             "RGB image buffer has {} bytes, expected {expected_len}",
             bytes.len()
-        )));
+        )
+        .into());
     }
 
     let mut image = Mat::new_rows_cols_with_default(
@@ -816,12 +813,8 @@ pub(crate) fn mat_from_rgb_bytes(bytes: &[u8], width: usize, height: usize) -> P
         width as i32,
         core::CV_8UC3,
         core::Scalar::all(0.0),
-    )
-    .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
-    image
-        .data_bytes_mut()
-        .map_err(|error| PyRuntimeError::new_err(error.to_string()))?
-        .copy_from_slice(bytes);
+    )?;
+    image.data_bytes_mut()?.copy_from_slice(bytes);
     Ok(image)
 }
 

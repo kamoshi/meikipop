@@ -20,24 +20,8 @@
           unstablePkgs = import nixpkgs-unstable { inherit system; };
           python = pkgs.python312;
 
-          pythonEnv = python.withPackages (
-            ps: with ps; [
-              lxml
-              mss
-              pillow
-              platformdirs
-              pynput
-              pyqt6
-              requests
-              xlib
-
-              # Development tools.
-              pytest
-            ]
-          );
-
           meikipopDev = pkgs.writeShellScriptBin "meikipop" ''
-            exec python -m meikipop.main "$@"
+            exec cargo run --manifest-path gui/Cargo.toml -- "$@"
           '';
 
           pipewireGstPlugin = "${pkgs.lib.getLib pkgs.pipewire}/lib/gstreamer-1.0";
@@ -45,7 +29,8 @@
         {
           default = pkgs.mkShell {
             packages = [
-              pythonEnv
+              # Temporarily needed by the embedded pickle-to-JSON converter.
+              python
               meikipopDev
 
               # Wayland ScreenCast portal / PipeWire support.
@@ -72,19 +57,15 @@
               unstablePkgs.clippy
               pkgs.llvmPackages.clang
               pkgs.llvmPackages.libclang
-              pkgs.maturin
               pkgs.opencv
               pkgs.openssl.dev
               pkgs.pkg-config
               pkgs.rust-analyzer
               unstablePkgs.rustc
               unstablePkgs.rustfmt
-              pkgs.ruff
-              pkgs.uv
             ];
 
             shellHook = ''
-              export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
               export GST_PLUGIN_SYSTEM_PATH_1_0="${pipewireGstPlugin}''${GST_PLUGIN_SYSTEM_PATH_1_0:+:$GST_PLUGIN_SYSTEM_PATH_1_0}"
               export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
               export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
@@ -98,8 +79,8 @@
 
               echo "meikipop development shell"
               echo "  Run: meikipop"
-              echo "  Source: $PWD/src"
-              echo "  Native install: maturin develop --manifest-path native/Cargo.toml"
+              echo "  Native library: $PWD/native"
+              echo "  Rust GUI: cargo run --manifest-path gui/Cargo.toml"
             '';
           };
         }
