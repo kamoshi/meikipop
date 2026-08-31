@@ -1,9 +1,12 @@
 pub mod dictionary;
+pub mod input;
 pub mod ocr;
 pub mod pipeline;
+pub mod platform;
 pub mod screenshot;
 pub mod utils;
 
+#[cfg(any(target_os = "linux", test))]
 fn crop_bgra_impl(
     frame: &[u8],
     full_width: usize,

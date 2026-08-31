@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::crop_bgra_impl;
-use crate::screenshot::interface::{Monitor, Screenshot, ScreenshotBackend};
+use crate::screenshot::interface::{FrameProvider, Monitor, Screenshot};
 use ashpd::desktop::screencast::{Screencast, SelectSourcesOptions, SourceType, Stream};
 use ashpd::desktop::{PersistMode, Session};
 use gstreamer as gst;
@@ -538,12 +538,12 @@ impl MssWaylandShim {
     }
 }
 
-impl ScreenshotBackend for MssWaylandShim {
+impl FrameProvider for MssWaylandShim {
     fn monitors(&mut self) -> Result<Vec<Monitor>, Box<dyn Error>> {
         Ok(self.monitors.clone())
     }
 
-    fn grab(&mut self, monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
+    fn frame(&mut self, monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
         self._grab_screenshot(monitor)
     }
 }

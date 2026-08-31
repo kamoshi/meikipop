@@ -55,7 +55,7 @@ pub struct RgbImage {
     pub height: usize,
 }
 
-pub trait ScreenshotBackend {
+pub trait FrameProvider: Send {
     fn monitors(&mut self) -> Result<Vec<Monitor>, Box<dyn Error>>;
-    fn grab(&mut self, monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>>;
+    fn frame(&mut self, monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>>;
 }

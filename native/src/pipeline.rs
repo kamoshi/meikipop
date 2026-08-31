@@ -6,15 +6,14 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, Sender};
-use x11rb::connection::Connection;
-use x11rb::protocol::xproto::ConnectionExt;
 
 use crate::dictionary::lookup::{DictionaryEntry, KanjiEntry, LookupEngine};
+use crate::input::interface::PointerProvider;
 use crate::ocr::hit_scan::hit_scan;
 use crate::ocr::interface::Paragraph;
 use crate::ocr::ocr::OcrProcessor;
-use crate::screenshot::interface::{Monitor, Screenshot, ScreenshotBackend};
-use crate::screenshot::wayland_mss_shim::MssWaylandShim;
+use crate::platform::create_desktop_providers;
+use crate::screenshot::interface::{FrameProvider, Monitor, Screenshot};
 
 pub struct PipelineConfig {
     pub dictionary_path: PathBuf,
@@ -48,6 +47,50 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn start(config: PipelineConfig) -> Result<Self, std::io::Error> {
+        Self::start_with_runner(move |running, popup_is_visible, event_sender| {
+            let screencast_token = config.screencast_token_path.to_string_lossy().into_owned();
+            let providers = match create_desktop_providers(screencast_token) {
+                Ok(providers) => providers,
+                Err(error) => {
+                    send_error(
+                        &event_sender,
+                        "Failed to initialize desktop providers",
+                        error,
+                    );
+                    return;
+                }
+            };
+            run_pipeline(
+                config,
+                providers.frames,
+                providers.pointer,
+                running,
+                popup_is_visible,
+                event_sender,
+            );
+        })
+    }
+
+    pub fn start_with_providers(
+        config: PipelineConfig,
+        frame_provider: Box<dyn FrameProvider>,
+        pointer_provider: Box<dyn PointerProvider>,
+    ) -> Result<Self, std::io::Error> {
+        Self::start_with_runner(move |running, popup_is_visible, event_sender| {
+            run_pipeline(
+                config,
+                frame_provider,
+                pointer_provider,
+                running,
+                popup_is_visible,
+                event_sender,
+            );
+        })
+    }
+
+    fn start_with_runner(
+        runner: impl FnOnce(Arc<AtomicBool>, Arc<AtomicBool>, Sender<PipelineEvent>) + Send + 'static,
+    ) -> Result<Self, std::io::Error> {
         let (event_sender, event_receiver) = crossbeam_channel::unbounded();
         let running = Arc::new(AtomicBool::new(true));
         let popup_is_visible = Arc::new(AtomicBool::new(false));
@@ -56,7 +99,7 @@ impl Pipeline {
             let popup_is_visible = Arc::clone(&popup_is_visible);
             thread::Builder::new()
                 .name("PipelineInit".to_owned())
-                .spawn(move || run_pipeline(config, running, popup_is_visible, event_sender))?
+                .spawn(move || runner(running, popup_is_visible, event_sender))?
         };
 
         Ok(Self {
@@ -97,21 +140,14 @@ struct LookupRequest {
 
 fn run_pipeline(
     config: PipelineConfig,
+    mut frame_provider: Box<dyn FrameProvider>,
+    pointer_provider: Box<dyn PointerProvider>,
     running: Arc<AtomicBool>,
     popup_is_visible: Arc<AtomicBool>,
     event_sender: Sender<PipelineEvent>,
 ) {
     log::debug!("Initializing native OCR pipeline");
-    let mut screenshot_backend =
-        match MssWaylandShim::new(config.screencast_token_path.to_string_lossy().into_owned()) {
-            Ok(backend) => backend,
-            Err(error) => {
-                send_error(&event_sender, "Failed to initialize screencast", error);
-                return;
-            }
-        };
-
-    let monitor = match screenshot_backend
+    let monitor = match frame_provider
         .monitors()
         .map_err(|error| error.to_string())
         .and_then(|monitors| {
@@ -174,7 +210,7 @@ fn run_pipeline(
         spawn_capture_worker(
             Arc::clone(&running),
             Arc::clone(&popup_is_visible),
-            screenshot_backend,
+            frame_provider,
             monitor.clone(),
             config.capture_interval,
             screenshot_sender,
@@ -187,10 +223,10 @@ fn run_pipeline(
         ),
         spawn_hit_scan_worker(
             Arc::clone(&running),
+            pointer_provider,
             monitor.clone(),
             ocr_receiver,
             lookup_sender,
-            event_sender.clone(),
         ),
         spawn_lookup_worker(
             Arc::clone(&running),
@@ -212,7 +248,7 @@ fn run_pipeline(
 fn spawn_capture_worker(
     running: Arc<AtomicBool>,
     popup_is_visible: Arc<AtomicBool>,
-    mut screenshot_backend: MssWaylandShim,
+    mut frame_provider: Box<dyn FrameProvider>,
     monitor: Monitor,
     capture_interval: Duration,
     screenshot_sender: Sender<Screenshot>,
@@ -227,7 +263,7 @@ fn spawn_capture_worker(
                     continue;
                 }
 
-                match screenshot_backend.grab(&monitor) {
+                match frame_provider.frame(&monitor) {
                     Ok(screenshot) => {
                         if !send_while_running(&screenshot_sender, screenshot, &running) {
                             break;
@@ -288,23 +324,15 @@ fn spawn_ocr_worker(
 
 fn spawn_hit_scan_worker(
     running: Arc<AtomicBool>,
+    mut pointer_provider: Box<dyn PointerProvider>,
     monitor: Monitor,
     ocr_receiver: Receiver<Vec<Paragraph>>,
     lookup_sender: Sender<LookupRequest>,
-    event_sender: Sender<PipelineEvent>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("HitScannerWorker".to_owned())
         .spawn(move || {
             log::debug!("Mouse tracker and hit scanner worker started");
-            let (connection, screen_number) = match x11rb::connect(None) {
-                Ok(connection) => connection,
-                Err(error) => {
-                    send_error(&event_sender, "Failed to connect to X11", error);
-                    return;
-                }
-            };
-            let root = connection.setup().roots[screen_number].root;
             let mut paragraphs = Vec::new();
             let mut last_mouse_pos = None;
 
@@ -315,13 +343,10 @@ fn spawn_hit_scan_worker(
                     ocr_changed = true;
                 }
 
-                let pointer = match connection
-                    .query_pointer(root)
-                    .map_err(|error| error.to_string())
-                    .and_then(|cookie| cookie.reply().map_err(|error| error.to_string()))
-                {
-                    Ok(pointer) => (i32::from(pointer.root_x), i32::from(pointer.root_y)),
-                    Err(_) => {
+                let pointer = match pointer_provider.position() {
+                    Ok(pointer) => pointer,
+                    Err(error) => {
+                        log::warn!("Failed to read pointer position: {error}");
                         thread::sleep(Duration::from_millis(25));
                         continue;
                     }

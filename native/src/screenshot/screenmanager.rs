@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::time::{Duration, Instant};
 
-use crate::screenshot::interface::{Monitor, RgbImage, Screenshot, ScreenshotBackend};
+use crate::screenshot::interface::{FrameProvider, Monitor, RgbImage, Screenshot};
 
 #[derive(Clone, Debug)]
 pub struct ScreenManagerConfig {
@@ -34,17 +34,17 @@ pub struct ScreenManager<B> {
     pub last_ocr_put_time: Option<Instant>,
     pub last_screenshot: Option<Screenshot>,
     pub last_mouse_pos: Option<(i32, i32)>,
-    screenshot_backend: B,
+    frame_provider: B,
 }
 
-impl<B: ScreenshotBackend> ScreenManager<B> {
-    pub fn new(screenshot_backend: B) -> Self {
+impl<B: FrameProvider> ScreenManager<B> {
+    pub fn new(frame_provider: B) -> Self {
         Self {
             monitor: None,
             last_ocr_put_time: None,
             last_screenshot: None,
             last_mouse_pos: None,
-            screenshot_backend,
+            frame_provider,
         }
     }
 
@@ -143,7 +143,7 @@ impl<B: ScreenshotBackend> ScreenManager<B> {
 
     pub fn take_screenshot(&mut self) -> Result<Screenshot, Box<dyn Error>> {
         let monitor = self.monitor.as_ref().ok_or("scan monitor is not set")?;
-        self.screenshot_backend.grab(monitor)
+        self.frame_provider.frame(monitor)
     }
 
     pub fn set_scan_region(&mut self, scan_rect: Option<Monitor>) -> bool {
@@ -159,7 +159,7 @@ impl<B: ScreenshotBackend> ScreenManager<B> {
 
     pub fn set_scan_screen(&mut self, screen_index: usize) -> Result<(), Box<dyn Error>> {
         log::info!("Set scan area to screen {screen_index}");
-        let monitors = self.screenshot_backend.monitors()?;
+        let monitors = self.frame_provider.monitors()?;
         if screen_index < monitors.len() {
             log::info!("Set scan area to screen {screen_index}");
             self.monitor = Some(monitors[screen_index].clone());
@@ -195,7 +195,7 @@ impl<B: ScreenshotBackend> ScreenManager<B> {
     }
 
     pub fn get_screens(&mut self) -> Result<Vec<Monitor>, Box<dyn Error>> {
-        self.screenshot_backend.monitors()
+        self.frame_provider.monitors()
     }
 }
 
@@ -204,17 +204,17 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
 
-    struct FakeScreenshotBackend {
+    struct FakeFrameProvider {
         monitors: Vec<Monitor>,
         screenshots: VecDeque<Screenshot>,
     }
 
-    impl ScreenshotBackend for FakeScreenshotBackend {
+    impl FrameProvider for FakeFrameProvider {
         fn monitors(&mut self) -> Result<Vec<Monitor>, Box<dyn Error>> {
             Ok(self.monitors.clone())
         }
 
-        fn grab(&mut self, _monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
+        fn frame(&mut self, _monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
             self.screenshots
                 .pop_front()
                 .ok_or_else(|| "no screenshot queued".into())
@@ -283,8 +283,8 @@ mod tests {
         }
     }
 
-    fn manager(screenshots: Vec<Screenshot>) -> ScreenManager<FakeScreenshotBackend> {
-        let backend = FakeScreenshotBackend {
+    fn manager(screenshots: Vec<Screenshot>) -> ScreenManager<FakeFrameProvider> {
+        let backend = FakeFrameProvider {
             monitors: vec![monitor()],
             screenshots: screenshots.into(),
         };
