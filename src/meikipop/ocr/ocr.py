@@ -2,7 +2,6 @@
 import logging
 import sys
 import threading
-import time
 
 from meikipop.config.config import config
 from meikipop_native.ocr.processor import OcrProcessor as NativeOcrProcessor
@@ -24,30 +23,7 @@ class OcrProcessor(threading.Thread):
         self._load_provider_from_config()
 
     def run(self):
-        logger.debug("OCR thread started.")
-        while self.shared_state.running:
-            try:
-                screenshot = self.shared_state.ocr_queue.get()
-                if not self.shared_state.running: break
-
-                logger.debug("OCR: Triggered!")
-
-                start_time = time.perf_counter()
-                image_rgb = screenshot.convert("RGB")
-                paragraph_count = self.ocr_backend.scan(
-                    image_rgb.tobytes(), image_rgb.width, image_rgb.height
-                )
-                logger.info(
-                    f"{self.ocr_backend.NAME} found {paragraph_count} paragraphs in {(time.perf_counter() - start_time):.3f}s.")
-                # todo keep last ocr result?
-
-                self.shared_state.hit_scan_queue.trigger()
-            except:
-                logger.exception("An unexpected error occurred in the ocr loop. Continuing...")
-            finally:
-                if config.auto_scan_mode:
-                    self.shared_state.screenshot_trigger_event.set()
-        logger.debug("OCR thread stopped.")
+        self.ocr_backend.start_worker(self.shared_state, config, logger)
 
     # todo combine methods?
     def switch_provider(self, provider_name: str):

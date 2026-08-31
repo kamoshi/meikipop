@@ -1,3 +1,6 @@
+// Modified from AuroraWright's OwOCR
+
+use std::error::Error;
 use std::fs;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -16,6 +19,9 @@ use gstreamer_video::VideoFrameExt;
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
+
+use crate::crop_bgra_impl;
+use crate::screenshot::interface::{Monitor, Screenshot, ScreenshotBackend};
 
 type PythonStreamInfo = (u32, Option<(i32, i32)>, Option<(i32, i32)>);
 
@@ -425,28 +431,7 @@ pub struct WaylandCapture {
 impl WaylandCapture {
     #[new]
     fn new(token_path: String) -> PyResult<Self> {
-        if token_path.is_empty() {
-            return Err(PyValueError::new_err("token_path must not be empty"));
-        }
-
-        let shared = Arc::new(SharedCapture::default());
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_shared = Arc::clone(&shared);
-        let worker_stop = Arc::clone(&stop);
-        let token_path = PathBuf::from(token_path);
-        thread::Builder::new()
-            .name("meikipop-wayland-capture".to_owned())
-            .spawn(
-                move || match run_capture(Arc::clone(&worker_shared), worker_stop, token_path) {
-                    Ok(()) => worker_shared.mark_stopped(),
-                    Err(error) => worker_shared.fail(error),
-                },
-            )
-            .map_err(|error| {
-                PyRuntimeError::new_err(format!("Could not start Wayland capture thread: {error}"))
-            })?;
-
-        Ok(Self { shared, stop })
+        Self::start(token_path).map_err(PyRuntimeError::new_err)
     }
 
     fn wait_ready(&self, py: Python<'_>, timeout_seconds: f64) -> PyResult<()> {
@@ -456,7 +441,7 @@ impl WaylandCapture {
             ));
         }
         let timeout = Duration::from_secs_f64(timeout_seconds);
-        match py.detach(|| self.shared.wait_ready(timeout)) {
+        match py.detach(|| self.wait_until_ready(timeout)) {
             Ok(()) => Ok(()),
             Err(WaitError::Failed(error)) => Err(PyRuntimeError::new_err(error)),
             Err(WaitError::TimedOut) => Err(PyTimeoutError::new_err(
@@ -469,13 +454,7 @@ impl WaylandCapture {
         &self,
         py: Python<'py>,
     ) -> Option<(Bound<'py, PyByteArray>, usize, usize)> {
-        let frame = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .frame
-            .clone()?;
+        let frame = self.latest_frame()?;
         Some((
             PyByteArray::new(py, frame.data.as_slice()),
             frame.width,
@@ -500,10 +479,135 @@ impl WaylandCapture {
     }
 }
 
+impl WaylandCapture {
+    fn start(token_path: String) -> Result<Self, String> {
+        if token_path.is_empty() {
+            return Err("token_path must not be empty".to_owned());
+        }
+
+        let shared = Arc::new(SharedCapture::default());
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_shared = Arc::clone(&shared);
+        let worker_stop = Arc::clone(&stop);
+        let token_path = PathBuf::from(token_path);
+        thread::Builder::new()
+            .name("meikipop-wayland-capture".to_owned())
+            .spawn(
+                move || match run_capture(Arc::clone(&worker_shared), worker_stop, token_path) {
+                    Ok(()) => worker_shared.mark_stopped(),
+                    Err(error) => worker_shared.fail(error),
+                },
+            )
+            .map_err(|error| format!("Could not start Wayland capture thread: {error}"))?;
+
+        Ok(Self { shared, stop })
+    }
+
+    fn wait_until_ready(&self, timeout: Duration) -> Result<(), WaitError> {
+        self.shared.wait_ready(timeout)
+    }
+
+    fn latest_frame(&self) -> Option<Frame> {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .frame
+            .clone()
+    }
+}
+
 impl Drop for WaylandCapture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.shared.changed.notify_all();
+    }
+}
+
+pub struct ScreenCastManager {
+    capture: WaylandCapture,
+}
+
+impl ScreenCastManager {
+    pub fn new(token_path: String) -> Result<Self, Box<dyn Error>> {
+        log::info!("Using Rust Wayland ScreenCast backend");
+        Ok(Self {
+            capture: WaylandCapture::start(token_path)?,
+        })
+    }
+
+    pub fn wait_until_ready(&self) -> Result<(), Box<dyn Error>> {
+        match self.capture.wait_until_ready(Duration::from_secs(63)) {
+            Ok(()) => Ok(()),
+            Err(WaitError::Failed(error)) => Err(error.into()),
+            Err(WaitError::TimedOut) => Err("Timed out waiting for the first Wayland frame".into()),
+        }
+    }
+
+    fn request_frame(&self) -> Result<Frame, Box<dyn Error>> {
+        self.capture
+            .latest_frame()
+            .ok_or_else(|| "Invalid frame received".into())
+    }
+}
+
+pub struct MssWaylandShim {
+    screencast: ScreenCastManager,
+    monitors: Vec<Monitor>,
+}
+
+impl MssWaylandShim {
+    pub fn new(token_path: String) -> Result<Self, Box<dyn Error>> {
+        let screencast = ScreenCastManager::new(token_path)?;
+        screencast.wait_until_ready()?;
+        let mut shim = Self {
+            screencast,
+            monitors: Vec::new(),
+        };
+        shim._create_monitors()?;
+        Ok(shim)
+    }
+
+    fn _create_monitors(&mut self) -> Result<(), Box<dyn Error>> {
+        self.monitors = Vec::new();
+
+        let frame = self.screencast.request_frame()?;
+        let fake_monitor = Monitor {
+            top: 0,
+            left: 0,
+            width: frame.width,
+            height: frame.height,
+        };
+
+        // Match mss: monitor 0 is the virtual desktop and physical monitors
+        // start at index 1. The portal provides one selected stream.
+        self.monitors.push(fake_monitor.clone());
+        self.monitors.push(fake_monitor);
+        Ok(())
+    }
+
+    fn _grab_screenshot(&self, monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
+        let frame = self.screencast.request_frame()?;
+        let (raw, width, height) = crop_bgra_impl(
+            frame.data.as_slice(),
+            frame.width,
+            frame.height,
+            monitor.left as i64,
+            monitor.top as i64,
+            monitor.width as i64,
+            monitor.height as i64,
+        )?;
+        Ok(Screenshot { raw, width, height })
+    }
+}
+
+impl ScreenshotBackend for MssWaylandShim {
+    fn monitors(&mut self) -> Result<Vec<Monitor>, Box<dyn Error>> {
+        Ok(self.monitors.clone())
+    }
+
+    fn grab(&mut self, monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
+        self._grab_screenshot(monitor)
     }
 }
 

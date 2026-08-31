@@ -2,7 +2,6 @@
 import argparse
 import signal
 import sys
-import threading
 
 from PyQt6.QtCore import qInstallMessageHandler
 from PyQt6.QtWidgets import QApplication
@@ -16,7 +15,8 @@ from meikipop.gui.tray import TrayIcon
 from meikipop.ocr.hit_scan import HitScanner
 from meikipop.ocr.ocr import OcrProcessor
 from meikipop.screenshot.screenmanager import ScreenManager
-from meikipop.utils.lastest_queue import LatestValueQueue
+from meikipop_native.runtime import Event, RLock
+from meikipop_native.utils.latest_queue import LatestValueQueue
 
 
 def qt_message_handler(mode, context, message):
@@ -35,13 +35,13 @@ class SharedState:
         self.running = True
 
         # events and queues
-        self.screenshot_trigger_event = threading.Event()
+        self.screenshot_trigger_event = Event()
         self.ocr_queue = LatestValueQueue()
         self.hit_scan_queue = LatestValueQueue()
         self.lookup_queue = LatestValueQueue()
 
         # screen lock - used by screen manager and popup
-        self.screen_lock = threading.RLock()
+        self.screen_lock = RLock()
 
 
 def run_gui():

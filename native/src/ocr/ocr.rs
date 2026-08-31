@@ -1,7 +1,10 @@
 // meikipop/ocr/ocr.rs
 
 use std::error::Error;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Instant;
 
 use opencv::core::Mat;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -153,7 +156,8 @@ impl OcrProcessor {
 
 #[pyclass(name = "OcrProcessor")]
 pub struct PyOcrProcessor {
-    inner: Mutex<OcrProcessor>,
+    inner: Arc<Mutex<OcrProcessor>>,
+    worker_started: AtomicBool,
 }
 
 #[pymethods]
@@ -161,9 +165,10 @@ impl PyOcrProcessor {
     #[new]
     fn new() -> PyResult<Self> {
         Ok(Self {
-            inner: Mutex::new(
+            inner: Arc::new(Mutex::new(
                 OcrProcessor::new().map_err(|error| PyRuntimeError::new_err(error.to_string()))?,
-            ),
+            )),
+            worker_started: AtomicBool::new(false),
         })
     }
 
@@ -202,11 +207,136 @@ impl PyOcrProcessor {
         Ok(self.lock()?.hit_scan(norm_x, norm_y))
     }
 
+    fn start_worker(
+        &self,
+        py: Python<'_>,
+        shared_state: Py<PyAny>,
+        config: Py<PyAny>,
+        logger: Py<PyAny>,
+    ) -> PyResult<()> {
+        if self.worker_started.swap(true, Ordering::AcqRel) {
+            return Err(PyRuntimeError::new_err("threads can only be started once"));
+        }
+
+        let inner = Arc::clone(&self.inner);
+        let shared_state = shared_state.clone_ref(py);
+        let config = config.clone_ref(py);
+        let logger = logger.clone_ref(py);
+        thread::Builder::new()
+            .name("OcrProcessor".to_owned())
+            .spawn(move || run_worker(inner, shared_state, config, logger))
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+        Ok(())
+    }
+
     fn switch_provider(&self, provider_name: &str) -> PyResult<()> {
         self.lock()?
             .switch_provider(provider_name)
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }
+}
+
+fn run_worker(
+    inner: Arc<Mutex<OcrProcessor>>,
+    shared_state: Py<PyAny>,
+    config: Py<PyAny>,
+    logger: Py<PyAny>,
+) {
+    python_log(&logger, "debug", "OCR thread started.");
+    while python_bool_attribute(&shared_state, "running") {
+        let result = Python::attach(|py| -> PyResult<()> {
+            let screenshot = shared_state
+                .getattr(py, "ocr_queue")?
+                .call_method0(py, "get")?;
+            if !shared_state.getattr(py, "running")?.extract::<bool>(py)? {
+                return Ok(());
+            }
+
+            python_log(&logger, "debug", "OCR: Triggered!");
+
+            let start_time = Instant::now();
+            let image_rgb = screenshot.call_method1(py, "convert", ("RGB",))?;
+            let image_bytes = image_rgb.call_method0(py, "tobytes")?;
+            let image_bytes: Vec<u8> = image_bytes.extract(py)?;
+            let width = image_rgb.getattr(py, "width")?.extract(py)?;
+            let height = image_rgb.getattr(py, "height")?.extract(py)?;
+            let image = mat_from_rgb_bytes(&image_bytes, width, height)?;
+            let (paragraph_count, provider_name) = py
+                .detach(|| {
+                    let mut processor = inner
+                        .lock()
+                        .map_err(|_| "OCR processor lock was poisoned".to_owned())?;
+                    let paragraph_count =
+                        processor.scan(&image).map_err(|error| error.to_string())?;
+                    let provider_name = processor.provider_name().unwrap_or("Unknown OCR provider");
+                    Ok::<_, String>((paragraph_count, provider_name))
+                })
+                .map_err(PyRuntimeError::new_err)?;
+            python_log(
+                &logger,
+                "info",
+                &format!(
+                    "{provider_name} found {paragraph_count} paragraphs in {:.3}s.",
+                    start_time.elapsed().as_secs_f64()
+                ),
+            );
+            // todo keep last ocr result?
+
+            shared_state
+                .getattr(py, "hit_scan_queue")?
+                .call_method0(py, "trigger")?;
+            Ok(())
+        });
+
+        if let Err(error) = result {
+            python_log(
+                &logger,
+                "error",
+                &format!("An unexpected error occurred in the ocr loop. Continuing: {error}"),
+            );
+        }
+
+        // This is the equivalent of upstream's `finally` block: auto mode
+        // schedules the next screenshot even when OCR raised an error.
+        Python::attach(|py| {
+            let result = (|| -> PyResult<()> {
+                if config.getattr(py, "auto_scan_mode")?.extract::<bool>(py)? {
+                    shared_state
+                        .getattr(py, "screenshot_trigger_event")?
+                        .call_method0(py, "set")?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                python_log(
+                    &logger,
+                    "error",
+                    &format!("Could not schedule the next automatic screenshot: {error}"),
+                );
+            }
+        });
+    }
+    python_log(&logger, "debug", "OCR thread stopped.");
+}
+
+fn python_bool_attribute(object: &Py<PyAny>, name: &str) -> bool {
+    Python::attach(|py| {
+        object
+            .getattr(py, name)
+            .and_then(|value| value.extract(py))
+            .unwrap_or_else(|error| {
+                log::error!("Could not read {name}: {error}");
+                false
+            })
+    })
+}
+
+fn python_log(logger: &Py<PyAny>, level: &str, message: &str) {
+    Python::attach(|py| {
+        if let Err(error) = logger.call_method1(py, level, (message,)) {
+            log::error!("Could not forward OCR log message to Python: {error}");
+        }
+    });
 }
 
 impl PyOcrProcessor {

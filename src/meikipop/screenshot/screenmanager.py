@@ -2,6 +2,7 @@
 import logging
 import threading
 import time
+from pathlib import Path
 
 from PIL import Image
 
@@ -9,9 +10,8 @@ from meikipop.config.config import config, IS_WAYLAND
 from meikipop.gui.region_selector import RegionSelector
 
 if IS_WAYLAND:
-    from . import wayland_mss_shim
-
-    mss = wayland_mss_shim.MSSModuleShim()
+    from meikipop.utils.paths import paths
+    from meikipop_native.screenshot import ScreenManager as NativeScreenManager
 else:
     import mss
 
@@ -28,9 +28,15 @@ class ScreenManager(threading.Thread):
         self.last_screenshot = None
         self.last_mouse_pos = None
         self.input_loop = input_loop
+        self._native = None
         if config.scan_region == "region":
             self.set_scan_region()
+            self._initialize_native()
+            if self._native and self.monitor:
+                self._native.set_scan_region(self.monitor["top"], self.monitor["left"],
+                                             self.monitor["width"], self.monitor["height"])
         else:
+            self._initialize_native()
             try:
                 screen_idx = int(config.scan_region)
                 self.set_scan_screen(screen_idx)
@@ -38,7 +44,16 @@ class ScreenManager(threading.Thread):
                 logger.warning(f"Invalid screen '{config.scan_region}' in config, defaulting to screen 1.")
                 self.set_scan_screen(1)
 
+    def _initialize_native(self):
+        if IS_WAYLAND:
+            token_file = Path(paths.cache_dir) / '.ocr_screencapture_token'
+            self._native = NativeScreenManager(self.shared_state, self.input_loop, config, str(token_file))
+
     def run(self):
+        if self._native:
+            self._native.start()
+            return
+
         logger.debug("Screenshot thread started.")
         while self.shared_state.running:
             try:
@@ -89,6 +104,8 @@ class ScreenManager(threading.Thread):
         logger.debug("Screenshot thread stopped.")
 
     def take_screenshot(self):
+        if self._native:
+            raise RuntimeError("The native ScreenManager owns Wayland screenshot capture.")
         with mss.mss() as sct:
             sct_img = sct.grab(self.monitor)
             return sct_img
@@ -99,12 +116,18 @@ class ScreenManager(threading.Thread):
             logger.info(f"Set scan area to region {scan_rect}")
             self.monitor = {"top": scan_rect.y(), "left": scan_rect.x(), "width": scan_rect.width(),
                             "height": scan_rect.height()}
+            if self._native:
+                self._native.set_scan_region(scan_rect.y(), scan_rect.x(), scan_rect.width(), scan_rect.height())
             return True
         else:
             logger.info("Region selection cancelled.")
             return False
 
     def set_scan_screen(self, screen_index):
+        if self._native:
+            self._native.set_scan_screen(screen_index)
+            return
+
         logger.info(f"Set scan area to screen {screen_index}")
         with mss.mss() as sct:
             if screen_index < len(sct.monitors):
@@ -114,11 +137,16 @@ class ScreenManager(threading.Thread):
                 logger.error(f"Cannot set scan screen: index {screen_index} is out of bounds.")
 
     def get_scan_geometry(self):
+        if self._native:
+            return self._native.get_scan_geometry()
         if not self.monitor:
             return 0, 0, 0, 0
         return self.monitor["left"], self.monitor["top"], self.monitor["width"], self.monitor["height"]
 
     def force_screenshot_trigger(self):
+        if self._native:
+            self._native.force_screenshot_trigger()
+            return
         self.last_screenshot = None
         self.last_mouse_pos = None
 
@@ -129,7 +157,8 @@ class ScreenManager(threading.Thread):
         else:
             self.shared_state.hit_scan_queue.trigger()
 
-    @staticmethod
-    def get_screens():
+    def get_screens(self):
+        if self._native:
+            return self._native.get_screens()
         with mss.mss() as sct:
             return sct.monitors

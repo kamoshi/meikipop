@@ -4,8 +4,10 @@ use pyo3::types::{PyByteArray, PyBytes};
 
 pub mod dictionary;
 pub mod ocr;
-mod wayland_capture;
-use wayland_capture::WaylandCapture;
+pub mod runtime;
+pub mod screenshot;
+pub mod utils;
+use screenshot::wayland_mss_shim::WaylandCapture;
 
 fn crop_bgra_impl(
     frame: &[u8],
@@ -106,6 +108,10 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let dummy_module = PyModule::new(py, "dummy")?;
     let meikiocr_module = PyModule::new(py, "meikiocr")?;
     let postprocessing_module = PyModule::new(py, "postprocessing")?;
+    let runtime_module = PyModule::new(py, "runtime")?;
+    let screenshot_module = PyModule::new(py, "screenshot")?;
+    let utils_module = PyModule::new(py, "utils")?;
+    let latest_queue_module = PyModule::new(py, "latest_queue")?;
 
     deconjugator_module.add(
         "MAX_DECONJ_ITERATIONS",
@@ -132,6 +138,14 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     ocr_module.add_submodule(&providers_module)?;
     module.add_submodule(&ocr_module)?;
 
+    runtime::register_python(&runtime_module)?;
+    module.add_submodule(&runtime_module)?;
+    screenshot::python::register_python(&screenshot_module)?;
+    module.add_submodule(&screenshot_module)?;
+    utils::latest_queue::register_python(&latest_queue_module)?;
+    utils_module.add_submodule(&latest_queue_module)?;
+    module.add_submodule(&utils_module)?;
+
     // PyModule::add_submodule exposes attributes, while import statements also
     // require the fully-qualified modules to be present in sys.modules.
     let modules = py.import("sys")?.getattr("modules")?;
@@ -151,6 +165,10 @@ fn meikipop_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         "meikipop_native.ocr.providers.postprocessing",
         &postprocessing_module,
     )?;
+    modules.set_item("meikipop_native.runtime", &runtime_module)?;
+    modules.set_item("meikipop_native.screenshot", &screenshot_module)?;
+    modules.set_item("meikipop_native.utils", &utils_module)?;
+    modules.set_item("meikipop_native.utils.latest_queue", &latest_queue_module)?;
 
     module.add_class::<WaylandCapture>()?;
     module.add_function(wrap_pyfunction!(backend_name, module)?)?;
