@@ -1,6 +1,7 @@
 use std::error::Error;
 
-use opencv::core::Mat;
+/// The RGB image type shared by OCR providers.
+pub type Mat = image::RgbImage;
 
 /// Abstract interface for an OCR provider.
 ///
@@ -14,7 +15,7 @@ pub trait OcrProvider: Send {
     ///
     /// # Arguments
     ///
-    /// * `image` - An OpenCV image to perform OCR on.
+    /// * `image` - An RGB image to perform OCR on.
     ///
     /// # Returns
     ///

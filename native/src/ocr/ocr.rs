@@ -2,11 +2,8 @@
 
 use std::error::Error;
 
-use opencv::core::Mat;
-
 use crate::ocr::hit_scan;
-use crate::ocr::interface::{OcrProvider, Paragraph};
-use crate::ocr::providers::meikiocr::ocr::mat_from_rgb_bytes;
+use crate::ocr::interface::{Mat, OcrProvider, Paragraph};
 use crate::ocr::providers::meikiocr::provider::MeikiOcrProvider;
 use crate::screenshot::interface::RgbImage;
 
@@ -47,9 +44,7 @@ impl OcrProcessor {
     }
 
     pub fn scan_rgb(&mut self, image: &RgbImage) -> Result<usize, Box<dyn Error>> {
-        let image = mat_from_rgb_bytes(&image.data, image.width, image.height)
-            .map_err(|error| error.to_string())?;
-        self.scan(&image)
+        self.scan(image)
     }
 
     pub fn hit_scan(&self, norm_x: f64, norm_y: f64) -> Option<String> {
@@ -162,11 +157,13 @@ impl OcrProcessor {
 mod tests {
     use super::*;
     use crate::ocr::providers::dummy::provider::DummyProvider;
-    use opencv::core::{CV_8UC3, Scalar};
 
     #[test]
     fn discovers_the_native_meikiocr_provider() {
-        assert_eq!(OcrProcessor::_discover_providers(), [DEFAULT_PROVIDER_NAME]);
+        assert!(
+            OcrProcessor::_discover_providers().contains(&DEFAULT_PROVIDER_NAME),
+            "the local OCR provider should be available on every platform"
+        );
     }
 
     #[test]
@@ -176,7 +173,7 @@ mod tests {
             available_providers: vec![DummyProvider::NAME],
             last_ocr_result: None,
         };
-        let image = Mat::new_rows_cols_with_default(600, 800, CV_8UC3, Scalar::all(0.0)).unwrap();
+        let image = Mat::new(800, 600);
 
         assert_eq!(processor.scan(&image).unwrap(), 2);
         assert_eq!(processor.last_ocr_result.as_ref().unwrap().len(), 2);

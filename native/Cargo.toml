@@ -11,9 +11,9 @@ crate-type = ["rlib"]
 [dependencies]
 crossbeam-channel = "0.5"
 hf-hub = { version = "1.0", features = ["blocking"] }
+image = { version = "0.25", default-features = false, features = ["bmp"] }
 log = "0.4"
 ndarray = "0.17"
-opencv = { version = "0.100", default-features = false, features = ["imgproc", "imgcodecs"] }
 ort = { version = "=2.0.0-rc.13", features = ["download-binaries", "ndarray"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

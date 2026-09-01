@@ -1,5 +1,7 @@
 use std::error::Error;
 
+pub type RgbImage = image::RgbImage;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Monitor {
     pub top: i32,
@@ -40,19 +42,11 @@ impl Screenshot {
         for pixel in self.raw.chunks_exact(4) {
             rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
         }
-        Ok(RgbImage {
-            data: rgb,
-            width: self.width,
-            height: self.height,
-        })
+        let width = u32::try_from(self.width).map_err(|_| "screenshot width exceeds u32")?;
+        let height = u32::try_from(self.height).map_err(|_| "screenshot height exceeds u32")?;
+        RgbImage::from_raw(width, height, rgb)
+            .ok_or_else(|| "failed to construct RGB screenshot".into())
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RgbImage {
-    pub data: Vec<u8>,
-    pub width: usize,
-    pub height: usize,
 }
 
 pub trait FrameProvider: Send {

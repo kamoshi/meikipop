@@ -3,6 +3,8 @@ use std::time::Instant;
 
 use core_graphics::event::CGEvent;
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use image::ExtendedColorType;
+use image::codecs::bmp::BmpEncoder;
 use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
@@ -10,12 +12,21 @@ use objc2_foundation::{NSArray, NSData, NSDictionary, NSString};
 use objc2_vision::{
     VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel,
 };
-use opencv::core::{Mat, Vector};
-use opencv::imgcodecs::imencode;
 
-use crate::ocr::interface::{BoundingBox, OcrProvider, Paragraph, Word};
+use crate::ocr::interface::{BoundingBox, Mat, OcrProvider, Paragraph, Word};
 
 pub struct AppleVisionOcrProvider;
+
+fn encode_bmp(image: &Mat) -> image::ImageResult<Vec<u8>> {
+    let mut buf = Vec::new();
+    BmpEncoder::new(&mut buf).encode(
+        image.as_raw(),
+        image.width(),
+        image.height(),
+        ExtendedColorType::Rgb8,
+    )?;
+    Ok(buf)
+}
 
 impl AppleVisionOcrProvider {
     pub fn new() -> Result<Self, Box<dyn Error>> {
@@ -39,11 +50,10 @@ impl OcrProvider for AppleVisionOcrProvider {
     fn scan(&mut self, image: &Mat) -> Result<Vec<Paragraph>, Box<dyn Error>> {
         let start_time = Instant::now();
 
-        let mut buf = Vector::new();
-        imencode(".bmp", image, &mut buf, &Vector::new())?;
+        let buf = encode_bmp(image)?;
         let encode_time = start_time.elapsed();
 
-        let ns_data = NSData::with_bytes(buf.as_slice());
+        let ns_data = NSData::with_bytes(&buf);
 
         let options = NSDictionary::new();
         let alloc = VNImageRequestHandler::alloc();
@@ -136,5 +146,23 @@ impl OcrProvider for AppleVisionOcrProvider {
         );
 
         Ok(paragraphs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{ImageFormat, Rgb};
+
+    #[test]
+    fn bmp_encoding_preserves_rgb_channels() {
+        let source = Mat::from_pixel(1, 1, Rgb([10, 20, 30]));
+
+        let decoded =
+            image::load_from_memory_with_format(&encode_bmp(&source).unwrap(), ImageFormat::Bmp)
+                .unwrap()
+                .into_rgb8();
+
+        assert_eq!(decoded.get_pixel(0, 0).0, [10, 20, 30]);
     }
 }

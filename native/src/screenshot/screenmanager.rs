@@ -319,7 +319,7 @@ mod tests {
 
         manager.run_once(&mut runtime).unwrap();
 
-        assert_eq!(runtime.ocr_images[0].data, [30, 20, 10]);
+        assert_eq!(runtime.ocr_images[0].as_raw(), &[30, 20, 10]);
         assert_eq!(manager.last_mouse_pos, Some((100, 200)));
         assert!(manager.last_ocr_put_time.is_some());
     }

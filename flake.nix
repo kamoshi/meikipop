@@ -28,9 +28,6 @@
         # Native-extension and general development tools.
         unstablePkgs.cargo
         unstablePkgs.clippy
-        pkgs.llvmPackages.clang
-        pkgs.llvmPackages.libclang
-        pkgs.opencv
         pkgs.openssl.dev
         pkgs.pkg-config
         pkgs.rust-analyzer

@@ -148,11 +148,9 @@ impl OcrProvider for DummyProvider {
 
     fn scan(
         &mut self,
-        image: &opencv::core::Mat,
+        image: &crate::ocr::interface::Mat,
     ) -> Result<Vec<Paragraph>, Box<dyn std::error::Error>> {
-        use opencv::core::MatTraitConst;
-
-        DummyProvider::scan(image.cols() as usize, image.rows() as usize)
+        DummyProvider::scan(image.width() as usize, image.height() as usize)
             .map_err(|error| error.into())
     }
 }
@@ -225,10 +223,10 @@ mod tests {
 
     #[test]
     fn can_be_used_as_an_ocr_provider_trait_object() {
-        use opencv::core::{CV_8UC3, Mat, Scalar};
+        use crate::ocr::interface::Mat;
 
         let mut provider: Box<dyn OcrProvider> = Box::new(DummyProvider);
-        let image = Mat::new_rows_cols_with_default(600, 800, CV_8UC3, Scalar::all(0.0)).unwrap();
+        let image = Mat::new(800, 600);
 
         assert_eq!(provider.name(), DummyProvider::NAME);
         assert_eq!(provider.scan(&image).unwrap().len(), 2);

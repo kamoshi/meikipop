@@ -5,12 +5,14 @@ use std::error::Error;
 use std::path::PathBuf;
 
 use hf_hub::{HFClientSync, split_id};
+use image::imageops::{FilterType, crop_imm, resize};
+use image::{GenericImageView, Rgb};
 use ndarray::{Array2, Array3, Array4, Axis, Ix2, Ix3, s};
-use opencv::core::{self, Mat, MatTraitConst, MatTraitManual, Rect, Size, Vec3b};
-use opencv::imgproc;
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::value::Tensor;
 use unicode_general_category::GeneralCategory;
+
+use crate::ocr::interface::Mat;
 
 type MeikiResult<T> = Result<T, Box<dyn Error>>;
 
@@ -236,16 +238,20 @@ impl MeikiOcr {
             return Ok(Vec::new());
         }
 
+        for image in text_line_images {
+            checked_image_dimensions(image)?;
+        }
+
         let text_boxes: Vec<_> = text_line_images
             .iter()
             .map(|image| TextBox {
-                bbox: [0, 0, image.cols(), image.rows()],
+                bbox: [0, 0, image.width() as i32, image.height() as i32],
             })
             .collect();
         let mut results = vec![OcrResult::default(); text_line_images.len()];
 
         for (i, image) in text_line_images.iter().enumerate() {
-            let (h, w) = (image.rows(), image.cols());
+            let (h, w) = (image.height(), image.width());
             let is_vertical = h > w;
 
             let Some((rec_batch, valid_indices, crop_metadata)) =
@@ -274,25 +280,20 @@ impl MeikiOcr {
     // --- Internal methods ---
 
     fn _preprocess_for_detection(&self, image: &Mat) -> MeikiResult<(Array4<f32>, f32)> {
-        let (h_orig, w_orig) = (image.rows() as usize, image.cols() as usize);
+        let (w_orig, h_orig) = checked_image_dimensions(image)?;
         let scale =
             (INPUT_DET_WIDTH as f32 / w_orig as f32).min(INPUT_DET_HEIGHT as f32 / h_orig as f32);
         let (w_resized, h_resized) = (
-            (w_orig as f32 * scale) as i32,
-            (h_orig as f32 * scale) as i32,
+            (w_orig as f32 * scale) as u32,
+            (h_orig as f32 * scale) as u32,
         );
-        let mut resized = Mat::default();
-        imgproc::resize(
-            image,
-            &mut resized,
-            Size::new(w_resized, h_resized),
-            0.0,
-            0.0,
-            imgproc::INTER_LINEAR,
-        )?;
+        if w_resized == 0 || h_resized == 0 {
+            return Err("resized image dimensions must be greater than zero".into());
+        }
+        let resized = resize(image, w_resized, h_resized, FilterType::Triangle);
 
         let mut tensor = Array4::<f32>::zeros((1, 3, INPUT_DET_HEIGHT, INPUT_DET_WIDTH));
-        copy_mat_to_chw(&resized, tensor.index_axis_mut(Axis(0), 0))?;
+        copy_image_to_chw(&resized, tensor.index_axis_mut(Axis(0), 0));
         Ok((tensor, scale))
     }
 
@@ -335,7 +336,8 @@ impl MeikiOcr {
         image: &Mat,
         conf_threshold: f32,
     ) -> Vec<TextBox> {
-        let (h_orig, w_orig) = (image.rows(), image.cols());
+        let (w_orig, h_orig) = image.dimensions();
+        let (w_orig, h_orig) = (w_orig as i32, h_orig as i32);
         let boxes = raw_outputs.boxes.index_axis(Axis(0), 0);
         let scores = raw_outputs.scores.index_axis(Axis(0), 0);
 
@@ -436,12 +438,14 @@ impl MeikiOcr {
             if x2 <= x1 || y2 <= y1 {
                 continue;
             }
-            let crop = Mat::roi(image, Rect::new(x1, y1, x2 - x1, y2 - y1))?;
-            if crop.empty() {
-                continue;
-            }
-
-            let (h, w) = (crop.rows(), crop.cols());
+            let crop = crop_imm(
+                image,
+                x1 as u32,
+                y1 as u32,
+                (x2 - x1) as u32,
+                (y2 - y1) as u32,
+            );
+            let (w, h) = crop.dimensions();
 
             if !is_vertical {
                 let mut new_h = INPUT_REC_HEIGHT;
@@ -455,7 +459,7 @@ impl MeikiOcr {
                 }
 
                 tensors.push(resize_pad_to_chw(
-                    &crop,
+                    &*crop,
                     new_w,
                     new_h,
                     INPUT_REC_WIDTH,
@@ -506,16 +510,19 @@ impl MeikiOcr {
                     if sy2 <= sy1 {
                         continue;
                     }
-                    let segment_crop = Mat::roi(image, Rect::new(x1, sy1, x2 - x1, sy2 - sy1))?;
-                    let seg_h = segment_crop.rows();
-                    if seg_h <= 0 {
-                        continue;
-                    }
+                    let segment_crop = crop_imm(
+                        image,
+                        x1 as u32,
+                        sy1 as u32,
+                        (x2 - x1) as u32,
+                        (sy2 - sy1) as u32,
+                    );
+                    let seg_h = segment_crop.height();
 
                     let seg_new_h =
                         ((seg_h as f32 * scale).round_ties_even() as usize).min(max_h_scaled);
                     tensors.push(resize_pad_to_chw(
-                        &segment_crop,
+                        &*segment_crop,
                         INPUT_VREC_WIDTH,
                         seg_new_h,
                         INPUT_VREC_WIDTH,
@@ -792,66 +799,50 @@ fn is_punctuation(character: char) -> bool {
     )
 }
 
-pub(crate) fn mat_from_rgb_bytes(bytes: &[u8], width: usize, height: usize) -> MeikiResult<Mat> {
-    let expected_len = width
-        .checked_mul(height)
-        .and_then(|pixels| pixels.checked_mul(3))
-        .ok_or("image dimensions are too large")?;
+fn checked_image_dimensions(image: &Mat) -> MeikiResult<(u32, u32)> {
+    let (width, height) = image.dimensions();
     if width == 0 || height == 0 {
         return Err("image dimensions must be greater than zero".into());
     }
-    if bytes.len() != expected_len {
-        return Err(format!(
-            "RGB image buffer has {} bytes, expected {expected_len}",
-            bytes.len()
-        )
-        .into());
+    if width > i32::MAX as u32 || height > i32::MAX as u32 {
+        return Err("image dimensions exceed the OCR coordinate range".into());
     }
-
-    let mut image = Mat::new_rows_cols_with_default(
-        height as i32,
-        width as i32,
-        core::CV_8UC3,
-        core::Scalar::all(0.0),
-    )?;
-    image.data_bytes_mut()?.copy_from_slice(bytes);
-    Ok(image)
+    Ok((width, height))
 }
 
-fn resize_pad_to_chw(
-    source: &impl core::ToInputArray,
+fn resize_pad_to_chw<I>(
+    source: &I,
     new_w: usize,
     new_h: usize,
     target_w: usize,
     target_h: usize,
-) -> MeikiResult<Array3<f32>> {
-    let mut resized = Mat::default();
-    imgproc::resize(
+) -> MeikiResult<Array3<f32>>
+where
+    I: GenericImageView<Pixel = Rgb<u8>>,
+{
+    if new_w == 0 || new_h == 0 {
+        return Err("resized image dimensions must be greater than zero".into());
+    }
+    let resized = resize(
         source,
-        &mut resized,
-        Size::new(new_w as i32, new_h as i32),
-        0.0,
-        0.0,
-        imgproc::INTER_LINEAR,
-    )?;
+        u32::try_from(new_w)?,
+        u32::try_from(new_h)?,
+        FilterType::Triangle,
+    );
     let mut tensor = Array3::<f32>::zeros((3, target_h, target_w));
-    copy_mat_to_chw(&resized, tensor.view_mut())?;
+    copy_image_to_chw(&resized, tensor.view_mut());
     Ok(tensor)
 }
 
-fn copy_mat_to_chw(
-    mat: &Mat,
-    mut destination: ndarray::ArrayViewMut3<'_, f32>,
-) -> opencv::Result<()> {
-    for y in 0..mat.rows() {
-        for x in 0..mat.cols() {
-            let pixel = *mat.at_2d::<Vec3b>(y, x)?;
-            for channel in 0..3 {
-                destination[[channel, y as usize, x as usize]] = pixel[channel] as f32 / 255.0;
-            }
+fn copy_image_to_chw<I>(image: &I, mut destination: ndarray::ArrayViewMut3<'_, f32>)
+where
+    I: GenericImageView<Pixel = Rgb<u8>>,
+{
+    for (x, y, pixel) in image.pixels() {
+        for channel in 0..3 {
+            destination[[channel, y as usize, x as usize]] = pixel[channel] as f32 / 255.0;
         }
     }
-    Ok(())
 }
 
 fn into_array3<T>(value: &ort::value::DynValue) -> MeikiResult<Array3<T>>
@@ -896,5 +887,22 @@ mod tests {
             chars.iter().map(|item| item.character).collect::<String>(),
             text
         );
+    }
+
+    #[test]
+    fn converts_rgb_to_normalized_chw_and_zero_pads() {
+        let image = Mat::from_raw(2, 1, vec![255, 128, 0, 0, 64, 255]).unwrap();
+
+        let tensor = resize_pad_to_chw(&image, 2, 1, 3, 2).unwrap();
+
+        assert_eq!(tensor.shape(), &[3, 2, 3]);
+        assert_eq!(tensor[[0, 0, 0]], 1.0);
+        assert_eq!(tensor[[1, 0, 0]], 128.0 / 255.0);
+        assert_eq!(tensor[[2, 0, 0]], 0.0);
+        assert_eq!(tensor[[0, 0, 1]], 0.0);
+        assert_eq!(tensor[[1, 0, 1]], 64.0 / 255.0);
+        assert_eq!(tensor[[2, 0, 1]], 1.0);
+        assert_eq!(tensor[[0, 0, 2]], 0.0);
+        assert_eq!(tensor[[2, 1, 2]], 0.0);
     }
 }

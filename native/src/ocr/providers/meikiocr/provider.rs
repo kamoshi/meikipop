@@ -1,12 +1,10 @@
 // meikipop/ocr/providers/meikiocr/provider.rs
 
-use opencv::core::{Mat, MatTraitConst};
-
 // Import the MeikiOCR library
 use super::ocr::{MeikiOcr, OcrResult};
 
 // Import the "contract" classes from your application's interface
-use crate::ocr::interface::{BoundingBox, OcrProvider, Paragraph, Word};
+use crate::ocr::interface::{BoundingBox, Mat, OcrProvider, Paragraph, Word};
 use crate::ocr::providers::postprocessing::group_lines_into_paragraphs;
 
 // --- pipeline configuration ---
@@ -33,8 +31,8 @@ impl MeikiOcrProvider {
 
     /// Performs OCR on the given image by calling the meikiocr library.
     pub fn scan(&mut self, image: &Mat) -> Result<Vec<Paragraph>, Box<dyn std::error::Error>> {
-        let img_width = image.cols();
-        let img_height = image.rows();
+        let img_width = i32::try_from(image.width())?;
+        let img_height = i32::try_from(image.height())?;
 
         if img_width == 0 || img_height == 0 {
             return Err("invalid image dimensions received".into());
