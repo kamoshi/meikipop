@@ -12,12 +12,13 @@ pub struct DesktopProviders {
 pub fn create_desktop_providers(
     screencast_token: String,
 ) -> Result<DesktopProviders, Box<dyn Error>> {
-    use crate::input::x11::X11PointerProvider;
     use crate::screenshot::wayland_mss_shim::MssWaylandShim;
 
+    let frames = MssWaylandShim::new(screencast_token)?;
+    let pointer = frames.pointer_provider();
     Ok(DesktopProviders {
-        frames: Box::new(MssWaylandShim::new(screencast_token)?),
-        pointer: Box::new(X11PointerProvider::new()?),
+        frames: Box::new(frames),
+        pointer: Box::new(pointer),
     })
 }
 

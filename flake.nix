@@ -41,22 +41,15 @@
           pkgs = import nixpkgs { inherit system; };
           unstablePkgs = import nixpkgs-unstable { inherit system; };
 
-          pipewireGstPlugin = "${pkgs.lib.getLib pkgs.pipewire}/lib/gstreamer-1.0";
         in
         pkgs.mkShell {
           packages = commonPackages pkgs unstablePkgs ++ [
             # Wayland ScreenCast portal / PipeWire support.
-            pkgs.gst_all_1.gstreamer
-            pkgs.gst_all_1.gst-plugins-base
-            pkgs.gst_all_1.gst-plugins-good
-            pkgs.gst_all_1.gst-plugins-bad
             pkgs.pipewire
 
-            # Headers and pkg-config metadata used by gstreamer-rs.
+            # Headers and pkg-config metadata used by the native UI and PipeWire.
             pkgs.fontconfig.dev
             pkgs.noto-fonts-cjk-sans
-            pkgs.gst_all_1.gstreamer.dev
-            pkgs.gst_all_1.gst-plugins-base.dev
             pkgs.libxkbcommon.dev
             pkgs.wayland.dev
             pkgs.xorg.libX11.dev
@@ -67,7 +60,7 @@
 
           shellHook = ''
             export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
-            export GST_PLUGIN_SYSTEM_PATH_1_0="${pipewireGstPlugin}''${GST_PLUGIN_SYSTEM_PATH_1_0:+:$GST_PLUGIN_SYSTEM_PATH_1_0}"
+            export BINDGEN_EXTRA_CLANG_ARGS="-I${pkgs.stdenv.cc.libc.dev}/include ''${BINDGEN_EXTRA_CLANG_ARGS:-}"
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
               pkgs.libxkbcommon
               pkgs.wayland

@@ -6,8 +6,14 @@ export component MeikiPopTray inherits SystemTrayIcon {
     tooltip: "MeikiPop";
 
     callback quit();
+    callback choose-screen();
 
     Menu {
+        MenuItem {
+            title: "Choose screen";
+            activated => { choose-screen(); }
+        }
+        MenuSeparator { }
         MenuItem {
             title: "Quit";
             activated => { quit(); }

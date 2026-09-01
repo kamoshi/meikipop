@@ -46,15 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     popup.set_ui_font_family(font_family.into());
     let tray = MeikiPopTray::new()?;
-    let pipeline = Rc::new(RefCell::new(Pipeline::start(PipelineConfig {
-        dictionary_path: dictionary_path(),
-        screencast_token_path: screencast_token_path(),
-        monitor_index: 1,
-        max_dict_entries: MAX_DICT_ENTRIES,
-        max_lookup_length: MAX_LOOKUP_LENGTH,
-        show_kanji: true,
-        capture_interval: Duration::from_millis(300),
-    })?));
+    let pipeline = Rc::new(RefCell::new(Pipeline::start(pipeline_config())?));
 
     // Create the native X11 window before the first OCR hit. On XWayland/KDE,
     // properties such as always-on-top and the final position are only applied
@@ -64,6 +56,34 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     tray.on_quit(|| {
         let _ = slint::quit_event_loop();
+    });
+
+    let pipeline_for_screen_choice = Rc::clone(&pipeline);
+    let popup_for_screen_choice = popup.as_weak();
+    tray.on_choose_screen(move || {
+        let token_path = screencast_token_path();
+        if let Err(error) = std::fs::remove_file(&token_path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %token_path.display(),
+                %error,
+                "Could not clear the saved screen selection"
+            );
+        }
+
+        let mut pipeline = pipeline_for_screen_choice.borrow_mut();
+        pipeline.shutdown();
+        match Pipeline::start(pipeline_config()) {
+            Ok(new_pipeline) => {
+                *pipeline = new_pipeline;
+                if let Some(popup) = popup_for_screen_choice.upgrade() {
+                    let _ = popup.hide();
+                }
+                tracing::info!("Reopened the system screen chooser");
+            }
+            Err(error) => tracing::error!(%error, "Could not restart screen capture"),
+        }
     });
 
     let popup_weak = popup.as_weak();
@@ -337,6 +357,18 @@ fn calculate_popup_position(
 
 fn dictionary_path() -> PathBuf {
     data_dir().join("meikipop").join("dictionary.pkl")
+}
+
+fn pipeline_config() -> PipelineConfig {
+    PipelineConfig {
+        dictionary_path: dictionary_path(),
+        screencast_token_path: screencast_token_path(),
+        monitor_index: 1,
+        max_dict_entries: MAX_DICT_ENTRIES,
+        max_lookup_length: MAX_LOOKUP_LENGTH,
+        show_kanji: true,
+        capture_interval: Duration::from_millis(300),
+    }
 }
 
 fn screencast_token_path() -> PathBuf {

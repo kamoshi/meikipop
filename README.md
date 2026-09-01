@@ -79,17 +79,13 @@ note that there may be problems when using python 3.14. use one of [these workar
 
 it is possible to run meikipop on wayland in principle, but depending on your specific setup you may need to take additional steps like installing additional dependencies, fixing some of the wayland specific code or changing some of your setup. since the wayland eco system is terribly fragmented and deliberately prevents apps like meikipop from working natively, don't expect any support, but feel free to open an issue regardless.
 
-here are some tips and recommendations:
-* consider switching to x11
-* the easiest and most compatible way is trying to run the flatpak distribution of meikipop first, before trying any of the other tips 
-* if the flatpak does not work for you, install via pypi or create an editable install and avoid the linux prebuilt, which only got tested on x11
-* make sure you have xwayland working
-* you may need to install additional python dependencies, depending on your system like `pip install pygobject`
-* you may need to install additional os dependencies, depending on your distribution like:
-  * fedora: `sudo dnf install libxcb xcb-util xcb-util-cursor libxkbcommon-x11 libxkbcommon xcb-util-wm xcb-util-keysyms pipewire-gstreamer`
-  * ubuntu: `sudo apt install cmake libcairo2-dev libgirepository-2.0-dev libgstreamer1.0-dev gstreamer1.0-pipewire libxcb-xkb-dev libxcb-cursor-dev libxcb-xinerama0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1-dev libxcb-shape0`
-* if meikipop is running, but doesn't show any popups, make sure to test lookups on a windowed xwayland application like steam
-* ask your favorite llm for help
+The native Linux backend uses the XDG ScreenCast portal and PipeWire directly.
+It requires a portal implementation that supports cursor metadata, such as the
+current KDE/KWin and GNOME/Mutter implementations. XWayland is not required for
+screen capture or cursor tracking.
+
+Install the PipeWire development package when building from source (typically
+`pipewire-devel` on Fedora or `libpipewire-0.3-dev` on Ubuntu).
 </details>
 
 ## how to use
@@ -136,4 +132,3 @@ meikipop import-yomitan-dict-text dict1.zip dict2.zip
 ## license
 
 meikipop is licensed under the GNU General Public License v3.0. see the `LICENSE` file for the full license text.
-

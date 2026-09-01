@@ -343,6 +343,7 @@ fn spawn_hit_scan_worker(
             log::debug!("Mouse tracker and hit scanner worker started");
             let mut paragraphs = Vec::new();
             let mut last_mouse_pos = None;
+            let mut last_pointer_error = None;
 
             while running.load(Ordering::Acquire) {
                 let mut ocr_changed = false;
@@ -352,9 +353,16 @@ fn spawn_hit_scan_worker(
                 }
 
                 let pointer = match pointer_provider.position() {
-                    Ok(pointer) => pointer,
+                    Ok(pointer) => {
+                        last_pointer_error = None;
+                        pointer
+                    }
                     Err(error) => {
-                        log::warn!("Failed to read pointer position: {error}");
+                        let message = error.to_string();
+                        if last_pointer_error.as_deref() != Some(message.as_str()) {
+                            log::warn!("Failed to read pointer position: {message}");
+                            last_pointer_error = Some(message);
+                        }
                         thread::sleep(Duration::from_millis(25));
                         continue;
                     }

@@ -2,22 +2,25 @@
 
 use std::error::Error;
 use std::fs;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::crop_bgra_impl;
 use crate::screenshot::interface::{FrameProvider, Monitor, Screenshot};
-use ashpd::desktop::screencast::{Screencast, SelectSourcesOptions, SourceType, Stream};
+use ashpd::desktop::screencast::{
+    CursorMode, Screencast, SelectSourcesOptions, SourceType, Stream,
+};
 use ashpd::desktop::{PersistMode, Session};
-use gstreamer as gst;
-use gstreamer::prelude::*;
-use gstreamer_app as gst_app;
-use gstreamer_video as gst_video;
-use gstreamer_video::VideoFrameExt;
+use pipewire as pw;
+use pw::properties::properties;
+use pw::spa;
+use spa::buffer::meta::MetaCursor;
+use spa::pod::Pod;
+
+use crate::input::interface::PointerProvider;
 
 #[derive(Clone)]
 struct Frame {
@@ -26,11 +29,14 @@ struct Frame {
     height: usize,
     left: i32,
     top: i32,
+    logical_width: usize,
+    logical_height: usize,
 }
 
 #[derive(Default)]
 struct CaptureState {
     frame: Option<Frame>,
+    pointer: Option<(i32, i32)>,
     error: Option<String>,
     stopped: bool,
 }
@@ -124,9 +130,18 @@ async fn open_portal(token_path: &Path) -> Result<PortalCapture, String> {
         .map(|token| token.trim().to_owned())
         .filter(|token| !token.is_empty());
 
+    let cursor_modes = proxy
+        .available_cursor_modes()
+        .await
+        .map_err(|error| format!("Failed to query ScreenCast cursor modes: {error}"))?;
+    if !cursor_modes.contains(CursorMode::Metadata) {
+        return Err("The Wayland ScreenCast portal does not support cursor metadata".to_owned());
+    }
+
     let options = SelectSourcesOptions::default()
         .set_sources(ashpd::enumflags2::BitFlags::from_flag(SourceType::Monitor))
         .set_multiple(false)
+        .set_cursor_mode(CursorMode::Metadata)
         .set_persist_mode(PersistMode::ExplicitlyRevoked)
         .set_restore_token(restore_token.as_deref());
 
@@ -205,153 +220,99 @@ fn copy_strided_bgra(
     Ok(packed)
 }
 
-fn process_sample(sample: &gst::Sample) -> Result<Frame, String> {
-    let caps = sample
-        .caps()
-        .ok_or_else(|| "GStreamer sample has no caps".to_owned())?;
-    let info = gst_video::VideoInfo::from_caps(caps)
-        .map_err(|error| format!("Invalid GStreamer video caps: {error}"))?;
-
-    if !matches!(
-        info.format(),
-        gst_video::VideoFormat::Bgra | gst_video::VideoFormat::Bgrx
-    ) {
-        return Err(format!(
-            "Expected a BGRA or BGRx frame, received {}",
-            info.format()
-        ));
-    }
-
-    let buffer = sample
-        .buffer()
-        .ok_or_else(|| "GStreamer sample has no buffer".to_owned())?;
-    let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &info)
-        .map_err(|error| format!("Could not map GStreamer video frame: {error}"))?;
-    let stride = frame
-        .plane_stride()
-        .first()
-        .copied()
-        .ok_or_else(|| "GStreamer video frame has no plane stride".to_owned())?;
-    let stride = usize::try_from(stride)
-        .map_err(|_| format!("Negative GStreamer video stride is unsupported: {stride}"))?;
-    let data = frame
-        .plane_data(0)
-        .map_err(|error| format!("Could not access GStreamer video plane: {error}"))?;
-    let width = frame.width() as usize;
-    let height = frame.height() as usize;
-    let data = copy_strided_bgra(data, width, height, stride)?;
-
-    Ok(Frame {
-        data: Arc::new(data),
-        width,
-        height,
-        left: 0,
-        top: 0,
-    })
+#[derive(Default)]
+struct PipeWireUserData {
+    format: spa::param::video::VideoInfoRaw,
 }
 
-fn build_pipeline(
-    pipewire_fd: i32,
-    node_id: u32,
-    position: (i32, i32),
-    shared: Arc<SharedCapture>,
-) -> Result<gst::Pipeline, String> {
-    gst::init().map_err(|error| format!("Failed to initialize GStreamer: {error}"))?;
-
-    let source = gst::ElementFactory::make("pipewiresrc")
-        .property("fd", pipewire_fd)
-        .property("path", node_id.to_string())
-        .build()
-        .map_err(|error| format!("Could not create pipewiresrc: {error}"))?;
-    let convert = gst::ElementFactory::make("videoconvert")
-        .build()
-        .map_err(|error| format!("Could not create videoconvert: {error}"))?;
-    let rate = gst::ElementFactory::make("videorate")
-        .property("drop-only", true)
-        .build()
-        .map_err(|error| format!("Could not create videorate: {error}"))?;
-    let caps = gst::Caps::builder("video/x-raw")
-        .field("format", gst::List::new(["BGRA", "BGRx"]))
-        .field("max-framerate", gst::Fraction::new(30, 1))
-        .build();
-    let caps_filter = gst::ElementFactory::make("capsfilter")
-        .property("caps", caps)
-        .build()
-        .map_err(|error| format!("Could not create GStreamer caps filter: {error}"))?;
-    let app_sink = gst::ElementFactory::make("appsink")
-        .property("max-buffers", 1u32)
-        .property("drop", true)
-        .property("enable-last-sample", false)
-        .property("qos", false)
-        .property("sync", false)
-        .property("wait-on-eos", false)
-        .build()
-        .map_err(|error| format!("Could not create GStreamer appsink: {error}"))?
-        .downcast::<gst_app::AppSink>()
-        .map_err(|_| "Created GStreamer sink is not an appsink".to_owned())?;
-
-    let callback_shared = Arc::clone(&shared);
-    app_sink.set_callbacks(
-        gst_app::AppSinkCallbacks::builder()
-            .new_sample(move |sink| {
-                let result = sink
-                    .pull_sample()
-                    .map_err(|_| "Could not pull GStreamer sample".to_owned())
-                    .and_then(|sample| process_sample(&sample));
-                match result {
-                    Ok(mut frame) => {
-                        frame.left = position.0;
-                        frame.top = position.1;
-                        callback_shared.set_frame(frame);
-                        Ok(gst::FlowSuccess::Ok)
-                    }
-                    Err(error) => {
-                        callback_shared.fail(error);
-                        Err(gst::FlowError::Error)
-                    }
-                }
-            })
-            .build(),
+fn format_parameter() -> Result<Vec<u8>, String> {
+    let object = spa::pod::object!(
+        spa::utils::SpaTypes::ObjectParamFormat,
+        spa::param::ParamType::EnumFormat,
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaType,
+            Id,
+            spa::param::format::MediaType::Video
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaSubtype,
+            Id,
+            spa::param::format::MediaSubtype::Raw
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFormat,
+            Choice,
+            Enum,
+            Id,
+            spa::param::video::VideoFormat::BGRA,
+            spa::param::video::VideoFormat::BGRA,
+            spa::param::video::VideoFormat::BGRx
+        )
     );
-
-    let pipeline = gst::Pipeline::default();
-    pipeline
-        .add_many([
-            &source,
-            &convert,
-            &rate,
-            &caps_filter,
-            app_sink.upcast_ref(),
-        ])
-        .map_err(|error| format!("Could not assemble GStreamer pipeline: {error}"))?;
-    gst::Element::link_many([
-        &source,
-        &convert,
-        &rate,
-        &caps_filter,
-        app_sink.upcast_ref(),
-    ])
-    .map_err(|error| format!("Could not link GStreamer pipeline: {error}"))?;
-
-    Ok(pipeline)
+    spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(object),
+    )
+    .map(|result| result.0.into_inner())
+    .map_err(|error| format!("Could not build PipeWire format parameter: {error}"))
 }
 
-fn gstreamer_error(message: &gst::MessageRef) -> Option<String> {
-    match message.view() {
-        gst::MessageView::Error(error) => {
-            let source = message
-                .src()
-                .map(|source| source.path_string().to_string())
-                .unwrap_or_else(|| "unknown GStreamer element".to_owned());
-            let debug = error.debug().unwrap_or_default();
-            Some(format!(
-                "GStreamer error from {source}: {} ({debug})",
-                error.error()
-            ))
-        }
-        gst::MessageView::Eos(_) => Some("PipeWire stream ended".to_owned()),
-        _ => None,
+fn cursor_meta_parameter() -> Result<Vec<u8>, String> {
+    let meta_size = std::mem::size_of::<spa::sys::spa_meta_cursor>()
+        + std::mem::size_of::<spa::sys::spa_meta_bitmap>();
+    let cursor_size = |side: usize| (meta_size + side * side * 4) as i32;
+    let object = spa::pod::Object {
+        type_: spa::utils::SpaTypes::ObjectParamMeta.as_raw(),
+        id: spa::param::ParamType::Meta.as_raw(),
+        properties: vec![
+            spa::pod::Property::new(
+                spa::sys::SPA_PARAM_META_type,
+                spa::pod::Value::Id(spa::utils::Id(spa::sys::SPA_META_Cursor)),
+            ),
+            // Leave enough room for the metadata, bitmap descriptor, and the
+            // compositor's conventional maximum 256x256 ARGB cursor image.
+            spa::pod::Property::new(
+                spa::sys::SPA_PARAM_META_size,
+                spa::pod::Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                    spa::utils::ChoiceFlags::empty(),
+                    spa::utils::ChoiceEnum::Range {
+                        default: cursor_size(64),
+                        min: cursor_size(1),
+                        max: cursor_size(256),
+                    },
+                ))),
+            ),
+        ],
+    };
+    spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(object),
+    )
+    .map(|result| result.0.into_inner())
+    .map_err(|error| format!("Could not build PipeWire cursor metadata parameter: {error}"))
+}
+
+fn update_cursor(
+    shared: &SharedCapture,
+    cursor: &MetaCursor,
+    stream_position: (i32, i32),
+    logical_size: (i32, i32),
+    pixel_size: (u32, u32),
+) {
+    if !cursor.is_valid() || pixel_size.0 == 0 || pixel_size.1 == 0 {
+        return;
     }
+    let position = cursor.position();
+    let x = stream_position.0
+        + (i64::from(position.x) * i64::from(logical_size.0) / i64::from(pixel_size.0)) as i32;
+    let y = stream_position.1
+        + (i64::from(position.y) * i64::from(logical_size.1) / i64::from(pixel_size.1)) as i32;
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    state.pointer = Some((x, y));
+    shared.changed.notify_all();
 }
 
 fn run_capture(
@@ -367,37 +328,136 @@ fn run_capture(
         portal.stream.size()
     );
 
-    let pipeline = build_pipeline(
-        portal.pipewire_fd.as_raw_fd(),
-        portal.stream.pipe_wire_node_id(),
-        portal.stream.position().unwrap_or_default(),
-        Arc::clone(&shared),
-    )?;
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|error| format!("Could not start GStreamer pipeline: {error}"))?;
+    let stream_position = portal.stream.position().unwrap_or_default();
+    let logical_size = portal
+        .stream
+        .size()
+        .filter(|size| size.0 > 0 && size.1 > 0)
+        .ok_or_else(|| "The Wayland portal returned invalid monitor geometry".to_owned())?;
+    pw::init();
+    let mainloop = pw::main_loop::MainLoopRc::new(None)
+        .map_err(|error| format!("Could not create PipeWire main loop: {error}"))?;
+    let context = pw::context::ContextRc::new(&mainloop, None)
+        .map_err(|error| format!("Could not create PipeWire context: {error}"))?;
+    let core = context
+        .connect_fd_rc(portal.pipewire_fd, None)
+        .map_err(|error| format!("Could not connect to portal PipeWire remote: {error}"))?;
+    let stream = pw::stream::StreamBox::new(
+        &core,
+        "meikipop-wayland-capture",
+        properties! {
+            *pw::keys::MEDIA_TYPE => "Video",
+            *pw::keys::MEDIA_CATEGORY => "Capture",
+            *pw::keys::MEDIA_ROLE => "Screen",
+        },
+    )
+    .map_err(|error| format!("Could not create PipeWire stream: {error}"))?;
 
-    let bus = pipeline
-        .bus()
-        .ok_or_else(|| "GStreamer pipeline has no bus".to_owned())?;
-    let mut result = Ok(());
-    while !stop.load(Ordering::Acquire) {
-        if let Some(message) = bus.timed_pop_filtered(
-            gst::ClockTime::from_mseconds(100),
-            &[gst::MessageType::Error, gst::MessageType::Eos],
-        ) {
-            if let Some(error) = gstreamer_error(&message) {
-                result = Err(error);
-                break;
+    let callback_shared = Arc::clone(&shared);
+    let _listener = stream
+        .add_local_listener_with_user_data(PipeWireUserData::default())
+        .param_changed(|stream, user_data, id, param| {
+            let Some(param) = param else { return };
+            if id == spa::param::ParamType::Format.as_raw() {
+                if let Err(error) = user_data.format.parse(param) {
+                    log::error!("Could not parse PipeWire video format: {error}");
+                    return;
+                }
+                match cursor_meta_parameter() {
+                    Ok(bytes) => {
+                        if let Some(meta) = Pod::from_bytes(&bytes) {
+                            if let Err(error) = stream.update_params(&mut [meta]) {
+                                log::error!("Could not request PipeWire cursor metadata: {error}");
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        log::error!("{error}");
+                    }
+                }
             }
-        }
-    }
+        })
+        .process(move |stream, user_data| {
+            let Some(mut buffer) = stream.dequeue_buffer() else {
+                return;
+            };
 
-    if let Err(error) = pipeline.set_state(gst::State::Null) {
-        if result.is_ok() {
-            result = Err(format!("Could not stop GStreamer pipeline: {error}"));
-        }
+            let pixel_size = user_data.format.size();
+            if let Some(cursor) = buffer.find_meta::<MetaCursor>() {
+                update_cursor(
+                    &callback_shared,
+                    cursor,
+                    stream_position,
+                    logical_size,
+                    (pixel_size.width, pixel_size.height),
+                );
+            }
+
+            // KDE and GNOME may send cursor-only buffers with no video data.
+            let Some(data) = buffer.datas_mut().first_mut() else {
+                return;
+            };
+            let offset = data.chunk().offset() as usize;
+            let size = data.chunk().size() as usize;
+            let stride = data.chunk().stride();
+            if size == 0 {
+                return;
+            }
+            let Ok(stride) = usize::try_from(stride) else {
+                callback_shared.fail(format!("Negative PipeWire video stride: {stride}"));
+                return;
+            };
+            let Some(mapped) = data.data() else {
+                callback_shared.fail("PipeWire returned an unmapped video buffer".to_owned());
+                return;
+            };
+            let end = offset.saturating_add(size).min(mapped.len());
+            let result = copy_strided_bgra(
+                &mapped[offset..end],
+                pixel_size.width as usize,
+                pixel_size.height as usize,
+                stride,
+            );
+            match result {
+                Ok(data) => callback_shared.set_frame(Frame {
+                    data: Arc::new(data),
+                    width: pixel_size.width as usize,
+                    height: pixel_size.height as usize,
+                    left: stream_position.0,
+                    top: stream_position.1,
+                    logical_width: logical_size.0.max(0) as usize,
+                    logical_height: logical_size.1.max(0) as usize,
+                }),
+                Err(error) => callback_shared.fail(error),
+            }
+        })
+        .register()
+        .map_err(|error| format!("Could not register PipeWire listener: {error}"))?;
+
+    let format = format_parameter()?;
+    let mut params = [Pod::from_bytes(&format)
+        .ok_or_else(|| "Could not parse PipeWire format parameter".to_owned())?];
+    stream
+        .connect(
+            spa::utils::Direction::Input,
+            Some(portal.stream.pipe_wire_node_id()),
+            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
+            &mut params,
+        )
+        .map_err(|error| format!("Could not connect PipeWire stream: {error}"))?;
+
+    while !stop.load(Ordering::Acquire) {
+        mainloop
+            .loop_()
+            .iterate(pw::loop_::Timeout::Finite(Duration::from_millis(100)));
     }
+    let _ = stream.disconnect();
+    drop(stream);
+    drop(core);
+    drop(context);
+    drop(mainloop);
+
+    let mut result = Ok(());
     if let Err(error) = async_io::block_on(portal.session.close()) {
         if result.is_ok() {
             result = Err(format!("Could not close ScreenCast session: {error}"));
@@ -493,6 +553,21 @@ pub struct MssWaylandShim {
     monitors: Vec<Monitor>,
 }
 
+pub struct WaylandPointerProvider {
+    shared: Arc<SharedCapture>,
+}
+
+impl PointerProvider for WaylandPointerProvider {
+    fn position(&mut self) -> Result<(i32, i32), Box<dyn Error>> {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pointer
+            .ok_or_else(|| "The Wayland screencast has not provided cursor metadata yet".into())
+    }
+}
+
 impl MssWaylandShim {
     pub fn new(token_path: String) -> Result<Self, Box<dyn Error>> {
         let screencast = ScreenCastManager::new(token_path)?;
@@ -505,6 +580,12 @@ impl MssWaylandShim {
         Ok(shim)
     }
 
+    pub fn pointer_provider(&self) -> WaylandPointerProvider {
+        WaylandPointerProvider {
+            shared: Arc::clone(&self.screencast.capture.shared),
+        }
+    }
+
     fn _create_monitors(&mut self) -> Result<(), Box<dyn Error>> {
         self.monitors = Vec::new();
 
@@ -512,8 +593,8 @@ impl MssWaylandShim {
         let fake_monitor = Monitor {
             top: frame.top,
             left: frame.left,
-            width: frame.width,
-            height: frame.height,
+            width: frame.logical_width,
+            height: frame.logical_height,
         };
 
         // Match mss: monitor 0 is the virtual desktop and physical monitors
@@ -523,18 +604,13 @@ impl MssWaylandShim {
         Ok(())
     }
 
-    fn _grab_screenshot(&self, monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
+    fn _grab_screenshot(&self, _monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
         let frame = self.screencast.request_frame()?;
-        let (raw, width, height) = crop_bgra_impl(
-            frame.data.as_slice(),
-            frame.width,
-            frame.height,
-            (monitor.left - frame.left) as i64,
-            (monitor.top - frame.top) as i64,
-            monitor.width as i64,
-            monitor.height as i64,
-        )?;
-        Ok(Screenshot { raw, width, height })
+        Ok(Screenshot {
+            raw: frame.data.as_ref().clone(),
+            width: frame.width,
+            height: frame.height,
+        })
     }
 }
 

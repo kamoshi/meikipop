@@ -7,6 +7,7 @@ pub mod screenshot;
 pub mod utils;
 
 #[cfg(any(target_os = "linux", test))]
+#[allow(dead_code)]
 fn crop_bgra_impl(
     frame: &[u8],
     full_width: usize,

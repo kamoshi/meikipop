@@ -24,10 +24,7 @@ zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
 async-io = "2.6"
-gstreamer = "0.24"
-gstreamer-app = "0.24"
-gstreamer-video = "0.24"
-x11rb = "0.13"
+pipewire = "0.10"
 zbus = "=5.19.0"
 zbus_macros = "=5.19.0"
 
