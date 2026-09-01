@@ -40,12 +40,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         while let event = pipeline.poll() {
             switch event {
+            case .captureReady:
+                // screencapturekit 1.x temporarily promotes accessory apps so
+                // macOS can present its system picker. Return to tray-only mode
+                // once the user has selected a screen.
+                NSApplication.shared.setActivationPolicy(.accessory)
             case let .show(entries, kanji):
                 popup.show(entries: entries, kanji: kanji)
                 pipeline.setPopupVisible(true)
             case .hide:
                 popup.requestHide()
             case let .error(message):
+                NSApplication.shared.setActivationPolicy(.accessory)
                 popup.showError(message)
             }
         }

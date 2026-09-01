@@ -37,4 +37,4 @@ objc2 = "0.6.2"
 objc2-core-foundation = "0.3.2"
 objc2-foundation = "0.3.2"
 objc2-vision = "0.3.2"
-screencapturekit = "=1.4.2"
+screencapturekit = { version = "=1.4.2", features = ["macos_14_0"] }

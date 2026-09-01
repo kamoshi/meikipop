@@ -27,6 +27,7 @@ pub struct PipelineConfig {
 
 #[derive(Debug)]
 pub enum PipelineEvent {
+    CaptureReady,
     LookupResult {
         entries: Vec<DictionaryEntry>,
         kanji: Option<KanjiEntry>,
@@ -169,6 +170,7 @@ fn run_pipeline(
         monitor.width,
         monitor.height
     );
+    let _ = event_sender.send(PipelineEvent::CaptureReady);
 
     let ocr_processor = match OcrProcessor::new() {
         Ok(processor) => processor,

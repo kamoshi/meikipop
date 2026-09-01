@@ -1,6 +1,11 @@
 // swift-tools-version: 5.10
 
 import PackageDescription
+import Foundation
+
+let nativeProfile = ProcessInfo.processInfo.environment["MEIKIPOP_NATIVE_PROFILE"] == "release"
+    ? "release"
+    : "debug"
 
 let package = Package(
     name: "MeikiPopSwift",
@@ -16,7 +21,7 @@ let package = Package(
             name: "MeikiPopSwift",
             dependencies: ["CMeikiPopFFI"],
             linkerSettings: [
-                .unsafeFlags(["-L", "../../crates/native-ffi/target/debug"]),
+                .unsafeFlags(["-L", "../../crates/native-ffi/target/\(nativeProfile)"]),
                 .linkedLibrary("meikipop_native_ffi"),
                 .linkedLibrary("c++"),
                 .linkedFramework("SystemConfiguration"),

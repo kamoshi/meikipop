@@ -130,6 +130,7 @@ fn process_pipeline_events(
             return;
         };
         match event {
+            PipelineEvent::CaptureReady => {}
             PipelineEvent::LookupResult {
                 entries,
                 kanji,

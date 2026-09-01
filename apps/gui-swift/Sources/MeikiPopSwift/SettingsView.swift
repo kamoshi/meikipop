@@ -106,13 +106,6 @@ private struct GeneralSettingsView: View {
                     }
                 }
 
-                Picker("Scan Area", selection: $settings.configuration.general.scanArea) {
-                    Text("Custom Region").tag(ScanAreaSelection.customRegion)
-                    ForEach(Array(settings.displays.enumerated()), id: \.element.id) { index, display in
-                        Text(display.title(number: index + 1)).tag(display.selectionID)
-                    }
-                }
-
                 Toggle(
                     "Only Scan on Mouse Move",
                     isOn: $settings.configuration.general.onlyScanOnMouseMove

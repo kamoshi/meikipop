@@ -1,11 +1,15 @@
 use std::error::Error;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use screencapturekit::content_sharing_picker::{
+    SCContentSharingPicker, SCContentSharingPickerConfiguration, SCContentSharingPickerMode,
+    SCPickerOutcome,
+};
 use screencapturekit::cv::CVPixelBufferLockFlags;
 use screencapturekit::prelude::*;
 
-use crate::screenshot::interface::{DisplayDescriptor, FrameProvider, Monitor, Screenshot};
+use crate::screenshot::interface::{FrameProvider, Monitor, Screenshot};
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -21,15 +25,10 @@ struct SharedCapture {
     changed: Condvar,
 }
 
-struct DisplayInfo {
-    display: SCDisplay,
-    monitor: Monitor,
-}
-
 pub struct ScreenCaptureKitFrameProvider {
-    displays: Vec<DisplayInfo>,
     monitors: Vec<Monitor>,
-    active_display_id: Option<u32>,
+    filter: Option<SCContentFilter>,
+    pixel_size: (u32, u32),
     stream: Option<SCStream>,
     shared: Arc<SharedCapture>,
 }
@@ -37,48 +36,25 @@ pub struct ScreenCaptureKitFrameProvider {
 impl ScreenCaptureKitFrameProvider {
     pub fn new() -> Result<Self, Box<dyn Error>> {
         log::info!("Using macOS ScreenCaptureKit backend");
-        let content = SCShareableContent::get()?;
-        let displays = content
-            .displays()
-            .into_iter()
-            .filter_map(|display| {
-                monitor_from_display(&display).map(|monitor| DisplayInfo { display, monitor })
-            })
-            .collect::<Vec<_>>();
+        let (filter, monitor, pixel_size) = pick_display()?;
 
-        if displays.is_empty() {
-            return Err("ScreenCaptureKit returned no displays".into());
-        }
-
-        // Match mss and the Linux backend: index 0 is the virtual desktop,
-        // while physical displays begin at index 1.
-        let mut monitors = Vec::with_capacity(displays.len() + 1);
-        monitors.push(virtual_monitor(&displays));
-        monitors.extend(displays.iter().map(|display| display.monitor.clone()));
+        // Preserve the FrameProvider convention used by the pipeline: index 0
+        // is a virtual-desktop entry and index 1 is the selected source. With
+        // a system picker both entries intentionally describe the same screen.
+        let monitors = vec![monitor.clone(), monitor];
 
         Ok(Self {
-            displays,
             monitors,
-            active_display_id: None,
+            filter: Some(filter),
+            pixel_size,
             stream: None,
             shared: Arc::new(SharedCapture::default()),
         })
     }
 
-    fn ensure_stream(&mut self, monitor: &Monitor) -> Result<(), Box<dyn Error>> {
-        let display = self
-            .displays
-            .iter()
-            .find(|display| display.monitor == *monitor)
-            .ok_or("Capturing the combined macOS virtual desktop is not supported yet")?;
-        let display_id = display.display.display_id();
-
-        if self.active_display_id == Some(display_id) && self.stream.is_some() {
+    fn ensure_stream(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.stream.is_some() {
             return Ok(());
-        }
-
-        if let Some(stream) = self.stream.take() {
-            let _ = stream.stop_capture();
         }
         {
             let mut state = self
@@ -90,20 +66,20 @@ impl ScreenCaptureKitFrameProvider {
             state.error = None;
         }
 
-        let filter = SCContentFilter::builder()
-            .display(&display.display)
-            .exclude_windows(&[])
-            .build();
+        let filter = self
+            .filter
+            .as_ref()
+            .ok_or("The selected ScreenCaptureKit source is no longer available")?;
         let config = SCStreamConfiguration::new()
-            .with_width(display.display.width())
-            .with_height(display.display.height())
+            .with_width(self.pixel_size.0)
+            .with_height(self.pixel_size.1)
             .with_pixel_format(PixelFormat::BGRA)
             .with_shows_cursor(false)
             .with_queue_depth(3)
             .with_fps(10);
 
         let shared = Arc::clone(&self.shared);
-        let mut stream = SCStream::new(&filter, &config);
+        let mut stream = SCStream::new(filter, &config);
         let handler_id = stream.add_output_handler(
             move |sample: CMSampleBuffer, output_type: SCStreamOutputType| {
                 if output_type != SCStreamOutputType::Screen {
@@ -131,7 +107,6 @@ impl ScreenCaptureKitFrameProvider {
         }
 
         stream.start_capture()?;
-        self.active_display_id = Some(display_id);
         self.stream = Some(stream);
         Ok(())
     }
@@ -169,32 +144,59 @@ impl ScreenCaptureKitFrameProvider {
     }
 }
 
-pub fn discover_displays() -> Result<Vec<DisplayDescriptor>, Box<dyn Error>> {
-    let content = SCShareableContent::get()?;
-    Ok(content
-        .displays()
-        .into_iter()
-        .filter_map(|display| {
-            monitor_from_display(&display).map(|monitor| DisplayDescriptor {
-                id: display.display_id(),
-                top: monitor.top,
-                left: monitor.left,
-                width: monitor.width,
-                height: monitor.height,
-            })
-        })
-        .collect())
-}
-
 impl FrameProvider for ScreenCaptureKitFrameProvider {
     fn monitors(&mut self) -> Result<Vec<Monitor>, Box<dyn Error>> {
         Ok(self.monitors.clone())
     }
 
-    fn frame(&mut self, monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
-        self.ensure_stream(monitor)?;
+    fn frame(&mut self, _monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
+        self.ensure_stream()?;
         self.latest_frame()
     }
+}
+
+fn pick_display() -> Result<(SCContentFilter, Monitor, (u32, u32)), Box<dyn Error>> {
+    let mut configuration = SCContentSharingPickerConfiguration::new();
+    configuration.set_allowed_picker_modes(&[SCContentSharingPickerMode::SingleDisplay]);
+    configuration.set_allows_changing_selected_content(false);
+
+    let (sender, receiver) = mpsc::sync_channel(1);
+    SCContentSharingPicker::show(&configuration, move |outcome| {
+        let _ = sender.send(outcome);
+    });
+
+    let result = match receiver.recv() {
+        Ok(SCPickerOutcome::Picked(result)) => result,
+        Ok(SCPickerOutcome::Cancelled) => return Err("Screen selection was cancelled".into()),
+        Ok(SCPickerOutcome::Error(error)) => {
+            return Err(format!("The macOS screen picker failed: {error}").into());
+        }
+        Err(_) => return Err("The macOS screen picker closed without a result".into()),
+    };
+
+    let display = result
+        .displays()
+        .into_iter()
+        .next()
+        .ok_or("The macOS screen picker did not return a display")?;
+    let monitor = monitor_from_display(&display)
+        .ok_or("The macOS screen picker returned invalid display geometry")?;
+    let pixel_size = result.pixel_size();
+    if pixel_size.0 == 0 || pixel_size.1 == 0 {
+        return Err("The macOS screen picker returned an empty display".into());
+    }
+
+    log::info!(
+        "Selected display {} through the macOS system picker: left={}, top={}, width={}, height={}, pixels={}x{}",
+        display.display_id(),
+        monitor.left,
+        monitor.top,
+        monitor.width,
+        monitor.height,
+        pixel_size.0,
+        pixel_size.1
+    );
+    Ok((result.filter(), monitor, pixel_size))
 }
 
 impl Drop for ScreenCaptureKitFrameProvider {
@@ -223,36 +225,6 @@ fn monitor_from_display(display: &SCDisplay) -> Option<Monitor> {
         width: frame.width.round() as usize,
         height: frame.height.round() as usize,
     })
-}
-
-fn virtual_monitor(displays: &[DisplayInfo]) -> Monitor {
-    let left = displays
-        .iter()
-        .map(|display| display.monitor.left)
-        .min()
-        .unwrap_or_default();
-    let top = displays
-        .iter()
-        .map(|display| display.monitor.top)
-        .min()
-        .unwrap_or_default();
-    let right = displays
-        .iter()
-        .map(|display| display.monitor.left + display.monitor.width as i32)
-        .max()
-        .unwrap_or_default();
-    let bottom = displays
-        .iter()
-        .map(|display| display.monitor.top + display.monitor.height as i32)
-        .max()
-        .unwrap_or_default();
-
-    Monitor {
-        left,
-        top,
-        width: right.saturating_sub(left) as usize,
-        height: bottom.saturating_sub(top) as usize,
-    }
 }
 
 fn screenshot_from_sample(sample: &CMSampleBuffer) -> Result<Screenshot, String> {

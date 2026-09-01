@@ -38,12 +38,12 @@ help:
 run: run-slint
 
 run-slint:
-	$(CARGO) run --manifest-path $(SLINT_MANIFEST)
+	$(CARGO) run --release --manifest-path $(SLINT_MANIFEST)
 
 ifeq ($(HOST_OS),Darwin)
 run-swift:
-	$(CARGO) build --manifest-path $(NATIVE_FFI_MANIFEST)
-	$(SWIFT) run --package-path $(SWIFT_PACKAGE)
+	$(CARGO) build --release --manifest-path $(NATIVE_FFI_MANIFEST)
+	MEIKIPOP_NATIVE_PROFILE=release $(SWIFT) run -c release --package-path $(SWIFT_PACKAGE)
 else
 run-swift:
 	@echo "The Swift frontend is only supported on macOS."

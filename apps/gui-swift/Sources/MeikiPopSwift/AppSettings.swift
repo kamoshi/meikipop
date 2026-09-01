@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 
 struct AppConfiguration: Codable, Equatable {
@@ -18,7 +17,6 @@ struct AppConfiguration: Codable, Equatable {
         var positionMode: PositionMode = .visualNovel
         var compactMode = true
         var scanMode: ScanMode = .auto
-        var scanArea = "Screen 1"
     }
 
     struct PopupContent: Codable, Equatable {
@@ -113,19 +111,6 @@ enum ScanMode: String, Codable, CaseIterable, Identifiable {
     var title: String { rawValue.capitalized }
 }
 
-enum ScanAreaSelection {
-    static let customRegion = "custom_region"
-
-    static func display(_ id: UInt32) -> String {
-        "display:\(id)"
-    }
-
-    static func displayID(from selection: String) -> UInt32? {
-        guard selection.hasPrefix("display:") else { return nil }
-        return UInt32(selection.dropFirst("display:".count))
-    }
-}
-
 enum Theme: String, Codable, CaseIterable, Identifiable {
     case nazeka
     case celestialIndigo = "celestial_indigo"
@@ -149,7 +134,6 @@ enum Theme: String, Codable, CaseIterable, Identifiable {
 @MainActor
 final class AppSettings: NSObject, ObservableObject {
     @Published var configuration: AppConfiguration
-    @Published private(set) var displays: [CaptureDisplay]
 
     private var savedConfiguration: AppConfiguration
     private let fileURL: URL
@@ -163,24 +147,10 @@ final class AppSettings: NSObject, ObservableObject {
             .appendingPathComponent("MeikiPop", isDirectory: true)
             .appendingPathComponent("config.json")
 
-        let discoveredDisplays = Self.discoverDisplays()
-        displays = discoveredDisplays
-        var loaded = Self.load(from: fileURL) ?? AppConfiguration()
-        Self.reconcileScanArea(in: &loaded, displays: discoveredDisplays)
+        let loaded = Self.load(from: fileURL) ?? AppConfiguration()
         configuration = loaded
         savedConfiguration = loaded
         super.init()
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(screenParametersDidChange),
-            name: NSApplication.didChangeScreenParametersNotification,
-            object: nil
-        )
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
     }
 
     func save() throws {
@@ -199,59 +169,6 @@ final class AppSettings: NSObject, ObservableObject {
 
     func discardChanges() {
         configuration = savedConfiguration
-    }
-
-    private func refreshDisplays() {
-        let discovered = Self.discoverDisplays()
-        guard !discovered.isEmpty else { return }
-
-        displays = discovered
-        let previousScanArea = configuration.general.scanArea
-        Self.reconcileScanArea(in: &configuration, displays: displays)
-        if configuration.general.scanArea != previousScanArea {
-            do {
-                try save()
-            } catch {
-                NSLog("Could not save the updated display selection: %@", error.localizedDescription)
-            }
-        }
-    }
-
-    @objc private func screenParametersDidChange() {
-        refreshDisplays()
-    }
-
-    private static func discoverDisplays() -> [CaptureDisplay] {
-        do {
-            return try DisplayDiscovery.load()
-        } catch {
-            NSLog("Could not discover displays: %@", error.localizedDescription)
-            return []
-        }
-    }
-
-    private static func reconcileScanArea(
-        in configuration: inout AppConfiguration,
-        displays: [CaptureDisplay]
-    ) {
-        let selection = configuration.general.scanArea
-        if selection == ScanAreaSelection.customRegion {
-            return
-        }
-        if let displayID = ScanAreaSelection.displayID(from: selection),
-           displays.contains(where: { $0.id == displayID }) {
-            return
-        }
-
-        let legacyNumber = selection
-            .split(separator: " ")
-            .last
-            .flatMap { Int($0) }
-        let legacyIndex = legacyNumber.map { max(0, $0 - 1) }
-        let fallback = legacyIndex.flatMap { displays.indices.contains($0) ? displays[$0] : nil }
-            ?? displays.first
-        configuration.general.scanArea = fallback.map(\.selectionID)
-            ?? ScanAreaSelection.customRegion
     }
 
     private static func load(from fileURL: URL) -> AppConfiguration? {

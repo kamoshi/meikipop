@@ -5,8 +5,6 @@
 
 typedef struct MeikiPopPipeline MeikiPopPipeline;
 
-char *meikipop_displays_json(char **error_out);
-
 MeikiPopPipeline *meikipop_pipeline_start(
     const char *dictionary_path,
     char **error_out

@@ -22,6 +22,7 @@ struct LookupKanji: Decodable {
 }
 
 enum RustPipelineEvent {
+    case captureReady
     case show(entries: [LookupEntry], kanji: LookupKanji?)
     case hide
     case error(String)
@@ -88,6 +89,8 @@ final class RustPipeline {
             let data = Data(bytes: eventPointer, count: strlen(eventPointer))
             let event = try decoder.decode(WireEvent.self, from: data)
             switch event.kind {
+            case "capture_ready":
+                return .captureReady
             case "show":
                 return .show(entries: event.entries ?? [], kanji: event.kanji)
             case "hide":

@@ -35,17 +35,6 @@ struct TrayMenu: Scene {
                 .labelsHidden()
             }
 
-            Menu("Scan area") {
-                Picker("Scan area", selection: persistedBinding(\.scanArea)) {
-                    Text("Custom Region").tag(ScanAreaSelection.customRegion)
-                    ForEach(Array(settings.displays.enumerated()), id: \.element.id) { index, display in
-                        Text(display.title(number: index + 1)).tag(display.selectionID)
-                    }
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
-            }
-
             Divider()
 
             Toggle("Pause meikipop", isOn: $isPaused)
