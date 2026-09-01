@@ -1,37 +1,66 @@
-# Python cache
-__pycache__/
-*.py[cod]
+*
+# Ignore everything unless it is explicitly part of the repository below.
 
-# Environment folders
-venv/
+# Root project files.
+!/.envrc
+!/.gitignore
+!/LICENSE
+!/Makefile
+!/README.md
+!/flake.lock
+!/flake.nix
+
+# CI configuration.
+!/.github/
+!/.github/**
+
+# Frontend applications.
+!/apps/
+!/apps/gui-slint/
+!/apps/gui-slint/Cargo.lock
+!/apps/gui-slint/Cargo.toml
+!/apps/gui-slint/build.rs
+!/apps/gui-slint/src/
+!/apps/gui-slint/src/**
+!/apps/gui-slint/ui/
+!/apps/gui-slint/ui/**
+!/apps/gui-swift/
+!/apps/gui-swift/Package.swift
+!/apps/gui-swift/README.md
+!/apps/gui-swift/Sources/
+!/apps/gui-swift/Sources/**
+
+# Native Rust library.
+!/native/
+!/native/Cargo.lock
+!/native/Cargo.toml
+!/native/README.md
+!/native/src/
+!/native/src/**
+
+# Shared application resources and development scripts.
+!/resources/
+!/resources/**
+!/scripts/
+!/scripts/**
+
+# Generated and machine-local content inside allowed directories.
+**/target/
+**/.build/
+**/__pycache__/
+*.py[cod]
+.DS_Store
+.direnv/
+.env
 .venv/
 env/
-.env
-
-# Build artifacts
-dist/
+venv/
 build/
-/native/target/
-
-# IDE folders
-.vscode/
-.idea/
-
-# Local project/user files
+dist/
 data/
 config.ini
 dictionary.pkl
-
-# MacOS things
-.DS_Store
-
 src/meikipop.egg-info/
-
-# Flatpak
-bundle-repo
-**.flatpak
+bundle-repo/
+*.flatpak
 python3-deps.json
-
-
-.direnv/
-target/

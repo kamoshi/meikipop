@@ -13,5 +13,5 @@ cargo test --manifest-path native/Cargo.toml
 The standalone Slint application consumes this crate as a normal Rust library:
 
 ```bash
-cargo run --manifest-path gui/Cargo.toml
+cargo run --manifest-path apps/gui-slint/Cargo.toml
 ```

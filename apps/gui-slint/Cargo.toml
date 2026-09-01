@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 fontdb = "0.23"
-meikipop-native = { path = "../native" }
+meikipop-native = { path = "../../native" }
 slint = { version = "=1.17.0", default-features = false, features = [
     "backend-winit-x11",
     "compat-1-2",

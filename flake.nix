@@ -22,7 +22,7 @@
         # Temporarily needed by the embedded pickle-to-JSON converter.
         pkgs.python312
         (pkgs.writeShellScriptBin "meikipop" ''
-          exec cargo run --manifest-path gui/Cargo.toml -- "$@"
+          exec cargo run --manifest-path apps/gui-slint/Cargo.toml -- "$@"
         '')
 
         # Native-extension and general development tools.
@@ -80,7 +80,7 @@
             echo "meikipop development shell (Linux)"
             echo "  Run: meikipop"
             echo "  Native library: $PWD/native"
-            echo "  Rust GUI: cargo run --manifest-path gui/Cargo.toml"
+            echo "  Rust GUI: cargo run --manifest-path apps/gui-slint/Cargo.toml"
           '';
         };
 
@@ -153,7 +153,7 @@
             echo "meikipop development shell (macOS)"
             echo "  Run: meikipop"
             echo "  Native library: $PWD/native"
-            echo "  Rust GUI: cargo run --manifest-path gui/Cargo.toml"
+            echo "  Rust GUI: cargo run --manifest-path apps/gui-slint/Cargo.toml"
           '';
         };
     in
