@@ -35,7 +35,10 @@ pub enum PipelineEvent {
         mouse_y: i32,
         monitor: Monitor,
     },
-    HidePopup,
+    HidePopup {
+        mouse_x: i32,
+        mouse_y: i32,
+    },
     Error(String),
 }
 
@@ -449,10 +452,20 @@ fn spawn_lookup_worker(
                         }
                         popup_is_visible.store(true, Ordering::Release);
                     } else {
-                        hide_popup_if_visible(&event_sender, &popup_is_visible);
+                        hide_popup_if_visible(
+                            &event_sender,
+                            &popup_is_visible,
+                            request.mouse_x,
+                            request.mouse_y,
+                        );
                     }
                 } else {
-                    hide_popup_if_visible(&event_sender, &popup_is_visible);
+                    hide_popup_if_visible(
+                        &event_sender,
+                        &popup_is_visible,
+                        request.mouse_x,
+                        request.mouse_y,
+                    );
                 }
             }
             log::debug!("Lookup worker stopped");
@@ -471,9 +484,14 @@ fn send_while_running<T>(sender: &Sender<T>, mut value: T, running: &AtomicBool)
     false
 }
 
-fn hide_popup_if_visible(sender: &Sender<PipelineEvent>, popup_is_visible: &AtomicBool) {
+fn hide_popup_if_visible(
+    sender: &Sender<PipelineEvent>,
+    popup_is_visible: &AtomicBool,
+    mouse_x: i32,
+    mouse_y: i32,
+) {
     if popup_is_visible.swap(false, Ordering::AcqRel) {
-        let _ = sender.send(PipelineEvent::HidePopup);
+        let _ = sender.send(PipelineEvent::HidePopup { mouse_x, mouse_y });
     }
 }
 

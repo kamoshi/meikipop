@@ -33,6 +33,23 @@ struct FormattedKanjiData {
     meanings: String,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct PopupBounds {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+impl PopupBounds {
+    fn contains(self, x: i32, y: i32) -> bool {
+        x >= self.x
+            && x < self.x.saturating_add(self.width)
+            && y >= self.y
+            && y < self.y.saturating_add(self.height)
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     logger::setup_logging()?;
     tracing::info!("Starting MeikiPop");
@@ -90,12 +107,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let pipeline_for_updates = Rc::clone(&pipeline);
     let hide_timer = Rc::new(slint::Timer::default());
     let hide_timer_for_updates = Rc::clone(&hide_timer);
+    let popup_bounds = Rc::new(RefCell::new(None));
+    let popup_bounds_for_updates = Rc::clone(&popup_bounds);
     let update_timer = slint::Timer::default();
     update_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(20),
         move || {
-            process_pipeline_events(&popup_weak, &pipeline_for_updates, &hide_timer_for_updates)
+            process_pipeline_events(
+                &popup_weak,
+                &pipeline_for_updates,
+                &hide_timer_for_updates,
+                &popup_bounds_for_updates,
+            )
         },
     );
 
@@ -144,6 +168,7 @@ fn process_pipeline_events(
     popup_weak: &slint::Weak<OcrPopup>,
     pipeline: &Rc<RefCell<Pipeline>>,
     hide_timer: &Rc<slint::Timer>,
+    popup_bounds: &Rc<RefCell<Option<PopupBounds>>>,
 ) {
     while let Some(event) = pipeline.borrow().try_recv() {
         let Some(popup) = popup_weak.upgrade() else {
@@ -159,7 +184,20 @@ fn process_pipeline_events(
                 monitor,
             } => {
                 hide_timer.stop();
-                let pointer_inside = popup.get_pointer_inside();
+                // A screenshot may already be queued for OCR when the popup is
+                // first shown. If that frame contains the popup, its lookup
+                // result arrives while the pointer is over our own window.
+                // Keep the existing entry visible instead of recursively
+                // looking up text rendered by the popup itself.
+                if popup_bounds
+                    .borrow()
+                    .is_some_and(|bounds| bounds.contains(mouse_x, mouse_y))
+                {
+                    pipeline.borrow().set_popup_visible(true);
+                    tracing::debug!("Ignoring lookup result from inside the popup");
+                    continue;
+                }
+
                 let formatted_entries: Vec<FormattedEntry> = entries
                     .iter()
                     .map(format_entry)
@@ -184,15 +222,9 @@ fn process_pipeline_events(
                 }
 
                 popup.set_has_error(false);
-                if !pointer_inside {
-                    popup.set_scroll_y(0.0);
-                }
+                popup.set_scroll_y(0.0);
                 let _ = popup.show();
                 pipeline.borrow().set_popup_visible(true);
-
-                if pointer_inside {
-                    continue;
-                }
 
                 let scale_factor = popup.window().scale_factor();
                 let physical_size = popup.window().size();
@@ -223,10 +255,17 @@ fn process_pipeline_events(
                 popup
                     .window()
                     .set_position(slint::LogicalPosition::new(x as f32, y as f32));
+                *popup_bounds.borrow_mut() = Some(PopupBounds {
+                    x,
+                    y,
+                    width: logical_width,
+                    height: logical_height,
+                });
             }
-            PipelineEvent::HidePopup => {
+            PipelineEvent::HidePopup { mouse_x, mouse_y } => {
                 let popup_weak = popup.as_weak();
                 let pipeline = Rc::clone(pipeline);
+                let popup_bounds = Rc::clone(popup_bounds);
                 hide_timer.start(
                     slint::TimerMode::SingleShot,
                     Duration::from_millis(200),
@@ -234,10 +273,14 @@ fn process_pipeline_events(
                         let Some(popup) = popup_weak.upgrade() else {
                             return;
                         };
-                        if popup.get_pointer_inside() {
+                        if popup_bounds
+                            .borrow()
+                            .is_some_and(|bounds| bounds.contains(mouse_x, mouse_y))
+                        {
                             pipeline.borrow().set_popup_visible(true);
                         } else {
                             let _ = popup.hide();
+                            *popup_bounds.borrow_mut() = None;
                             pipeline.borrow().set_popup_visible(false);
                         }
                     },
@@ -254,12 +297,6 @@ fn process_pipeline_events(
                     .set_position(slint::LogicalPosition::new(80.0, 80.0));
             }
         }
-    }
-
-    if let Some(popup) = popup_weak.upgrade()
-        && popup.get_pointer_inside()
-    {
-        pipeline.borrow().set_popup_visible(true);
     }
 }
 

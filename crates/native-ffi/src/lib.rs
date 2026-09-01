@@ -94,7 +94,7 @@ impl From<PipelineEvent> for Event {
                 entries: entries.into_iter().map(Entry::from).collect(),
                 kanji: kanji.map(Kanji::from),
             },
-            PipelineEvent::HidePopup => Self::Hide,
+            PipelineEvent::HidePopup { .. } => Self::Hide,
             PipelineEvent::Error(message) => Self::Error { message },
         }
     }
