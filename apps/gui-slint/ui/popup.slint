@@ -1,3 +1,5 @@
+import { ScrollView } from "std-widgets.slint";
+
 export struct FormattedEntry {
     word: string,
     reading: string,
@@ -23,9 +25,11 @@ export component OcrPopup inherits Window {
     in property <string> kanji-meanings: "day, sun, Japan, counter for days";
     in property <string> error-text: "";
     in property <bool> has-error: false;
+    out property <bool> pointer-inside: hover-area.has-hover;
+    in-out property <length> scroll-y <=> scroll-view.viewport-y;
 
     width: 380px;
-    height: content.preferred-height;
+    height: min(content.preferred-height, 360px);
     no-frame: true;
     always-on-top: true;
     background: transparent;
@@ -38,115 +42,122 @@ export component OcrPopup inherits Window {
         border-radius: 8px;
         clip: true;
 
-        content := VerticalLayout {
-            padding-left: 14px;
-            padding-right: 14px;
-            padding-top: 10px;
-            padding-bottom: 12px;
-            spacing: 8px;
+        hover-area := TouchArea {
+            scroll-view := ScrollView {
+                horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
 
-            if root.has-error : VerticalLayout {
-                Text {
-                    text: "MeikiPop Error";
-                    color: #ff8888;
-                    font-size: 15px;
-                    font-weight: 700;
-                }
-                Text {
-                    text: root.error-text;
-                    color: #f0f0f0;
-                    font-size: 13px;
-                    wrap: word-wrap;
-                }
-            }
+                content := VerticalLayout {
+                    width: scroll-view.visible-width;
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    padding-top: 10px;
+                    padding-bottom: 12px;
+                    spacing: 8px;
 
-            if !root.has-error : VerticalLayout {
-                spacing: 8px;
-
-                for entry[i] in root.entries : VerticalLayout {
-                    spacing: 3px;
-
-                    if i > 0 : Rectangle {
-                        height: 1px;
-                        background: #444444;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        alignment: start;
-
+                    if root.has-error : VerticalLayout {
                         Text {
-                            text: entry.word;
-                            color: #88d8ff;
-                            font-size: 18px;
-                        }
-
-                        if entry.reading != "" : Text {
-                            text: " [" + entry.reading + "]";
-                            color: #90ee90;
+                            text: "MeikiPop Error";
+                            color: #ff8888;
                             font-size: 15px;
-                            vertical-alignment: center;
+                            font-weight: 700;
                         }
-
-                        if entry.deconjugation != "" : Text {
-                            text: "(" + entry.deconjugation + ")";
-                            color: #aaaaaa;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-
-                        if entry.freq != "" : Text {
-                            text: "#" + entry.freq;
-                            color: #777777;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    Text {
-                        text: entry.definitions;
-                        color: #f0f0f0;
-                        font-size: 14px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                if root.has-kanji : Rectangle {
-                    background: #ffffff0a;
-                    border-color: #88d8ff55;
-                    border-width: 1px;
-                    border-radius: 6px;
-
-                    VerticalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        padding-top: 6px;
-                        padding-bottom: 6px;
-                        spacing: 4px;
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            alignment: start;
-
-                            Text {
-                                text: root.kanji-character;
-                                color: #88d8ff;
-                                font-size: 18px;
-                            }
-
-                            Text {
-                                text: "[" + root.kanji-readings + "]";
-                                color: #90ee90;
-                                font-size: 14px;
-                                vertical-alignment: center;
-                            }
-                        }
-
                         Text {
-                            text: root.kanji-meanings;
-                            color: #e0e0e0;
+                            text: root.error-text;
+                            color: #f0f0f0;
                             font-size: 13px;
                             wrap: word-wrap;
+                        }
+                    }
+
+                    if !root.has-error : VerticalLayout {
+                        spacing: 8px;
+
+                        for entry[i] in root.entries : VerticalLayout {
+                            spacing: 3px;
+
+                            if i > 0 : Rectangle {
+                                height: 1px;
+                                background: #444444;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                alignment: start;
+
+                                Text {
+                                    text: entry.word;
+                                    color: #88d8ff;
+                                    font-size: 18px;
+                                }
+
+                                if entry.reading != "" : Text {
+                                    text: " [" + entry.reading + "]";
+                                    color: #90ee90;
+                                    font-size: 15px;
+                                    vertical-alignment: center;
+                                }
+
+                                if entry.deconjugation != "" : Text {
+                                    text: "(" + entry.deconjugation + ")";
+                                    color: #aaaaaa;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+
+                                if entry.freq != "" : Text {
+                                    text: "#" + entry.freq;
+                                    color: #777777;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Text {
+                                text: entry.definitions;
+                                color: #f0f0f0;
+                                font-size: 14px;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        if root.has-kanji : Rectangle {
+                            background: #ffffff0a;
+                            border-color: #88d8ff55;
+                            border-width: 1px;
+                            border-radius: 6px;
+
+                            VerticalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                padding-top: 6px;
+                                padding-bottom: 6px;
+                                spacing: 4px;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
+
+                                    Text {
+                                        text: root.kanji-character;
+                                        color: #88d8ff;
+                                        font-size: 18px;
+                                    }
+
+                                    Text {
+                                        text: "[" + root.kanji-readings + "]";
+                                        color: #90ee90;
+                                        font-size: 14px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                Text {
+                                    text: root.kanji-meanings;
+                                    color: #e0e0e0;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                            }
                         }
                     }
                 }

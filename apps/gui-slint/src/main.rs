@@ -68,11 +68,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let popup_weak = popup.as_weak();
     let pipeline_for_updates = Rc::clone(&pipeline);
+    let hide_timer = Rc::new(slint::Timer::default());
+    let hide_timer_for_updates = Rc::clone(&hide_timer);
     let update_timer = slint::Timer::default();
     update_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(20),
-        move || process_pipeline_events(&popup_weak, &pipeline_for_updates.borrow()),
+        move || {
+            process_pipeline_events(&popup_weak, &pipeline_for_updates, &hide_timer_for_updates)
+        },
     );
 
     tray.show()?;
@@ -116,8 +120,12 @@ fn preferred_font_family() -> String {
         .to_owned()
 }
 
-fn process_pipeline_events(popup_weak: &slint::Weak<OcrPopup>, pipeline: &Pipeline) {
-    while let Some(event) = pipeline.try_recv() {
+fn process_pipeline_events(
+    popup_weak: &slint::Weak<OcrPopup>,
+    pipeline: &Rc<RefCell<Pipeline>>,
+    hide_timer: &Rc<slint::Timer>,
+) {
+    while let Some(event) = pipeline.borrow().try_recv() {
         let Some(popup) = popup_weak.upgrade() else {
             return;
         };
@@ -129,6 +137,8 @@ fn process_pipeline_events(popup_weak: &slint::Weak<OcrPopup>, pipeline: &Pipeli
                 mouse_y,
                 monitor,
             } => {
+                hide_timer.stop();
+                let pointer_inside = popup.get_pointer_inside();
                 let formatted_entries: Vec<FormattedEntry> = entries
                     .iter()
                     .map(format_entry)
@@ -153,8 +163,16 @@ fn process_pipeline_events(popup_weak: &slint::Weak<OcrPopup>, pipeline: &Pipeli
                 }
 
                 popup.set_has_error(false);
+                if !pointer_inside {
+                    popup.set_scroll_y(0.0);
+                }
                 let _ = popup.show();
-                pipeline.set_popup_visible(true);
+                pipeline.borrow().set_popup_visible(true);
+
+                if pointer_inside {
+                    continue;
+                }
+
                 let scale_factor = popup.window().scale_factor();
                 let physical_size = popup.window().size();
                 let logical_width = (physical_size.width as f32 / scale_factor).round() as i32;
@@ -186,18 +204,41 @@ fn process_pipeline_events(popup_weak: &slint::Weak<OcrPopup>, pipeline: &Pipeli
                     .set_position(slint::LogicalPosition::new(x as f32, y as f32));
             }
             PipelineEvent::HidePopup => {
-                let _ = popup.hide();
-                pipeline.set_popup_visible(false);
+                let popup_weak = popup.as_weak();
+                let pipeline = Rc::clone(pipeline);
+                hide_timer.start(
+                    slint::TimerMode::SingleShot,
+                    Duration::from_millis(200),
+                    move || {
+                        let Some(popup) = popup_weak.upgrade() else {
+                            return;
+                        };
+                        if popup.get_pointer_inside() {
+                            pipeline.borrow().set_popup_visible(true);
+                        } else {
+                            let _ = popup.hide();
+                            pipeline.borrow().set_popup_visible(false);
+                        }
+                    },
+                );
             }
             PipelineEvent::Error(error) => {
+                hide_timer.stop();
                 popup.set_has_error(true);
                 popup.set_error_text(error.into());
+                popup.set_scroll_y(0.0);
                 let _ = popup.show();
                 popup
                     .window()
                     .set_position(slint::LogicalPosition::new(80.0, 80.0));
             }
         }
+    }
+
+    if let Some(popup) = popup_weak.upgrade()
+        && popup.get_pointer_inside()
+    {
+        pipeline.borrow().set_popup_visible(true);
     }
 }
 
