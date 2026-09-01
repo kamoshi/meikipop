@@ -79,7 +79,7 @@
 
             echo "meikipop development shell (Linux)"
             echo "  Run: meikipop"
-            echo "  Native library: $PWD/native"
+            echo "  Native library: $PWD/crates/native"
             echo "  Rust GUI: cargo run --manifest-path apps/gui-slint/Cargo.toml"
           '';
         };
@@ -152,7 +152,7 @@
 
             echo "meikipop development shell (macOS)"
             echo "  Run: meikipop"
-            echo "  Native library: $PWD/native"
+            echo "  Native library: $PWD/crates/native"
             echo "  Rust GUI: cargo run --manifest-path apps/gui-slint/Cargo.toml"
           '';
         };

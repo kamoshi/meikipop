@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn parses_the_upstream_rule_file() {
-        let json = include_str!("../../../scripts/deconjugator.json");
+        let json = include_str!("../../../../scripts/deconjugator.json");
         let deconjugator = Deconjugator::from_json(json).unwrap();
 
         assert!(!deconjugator.rules.is_empty());

@@ -6,8 +6,8 @@ and worker pipeline.
 Build and test it with Cargo:
 
 ```bash
-cargo build --manifest-path native/Cargo.toml
-cargo test --manifest-path native/Cargo.toml
+cargo build --manifest-path crates/native/Cargo.toml
+cargo test --manifest-path crates/native/Cargo.toml
 ```
 
 The standalone Slint application consumes this crate as a normal Rust library:

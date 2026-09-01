@@ -8,6 +8,19 @@ let package = Package(
         .macOS(.v14),
     ],
     targets: [
-        .executableTarget(name: "MeikiPopSwift"),
+        .systemLibrary(
+            name: "CMeikiPopFFI",
+            path: "CMeikiPopFFI"
+        ),
+        .executableTarget(
+            name: "MeikiPopSwift",
+            dependencies: ["CMeikiPopFFI"],
+            linkerSettings: [
+                .unsafeFlags(["-L", "../../crates/native-ffi/target/debug"]),
+                .linkedLibrary("meikipop_native_ffi"),
+                .linkedLibrary("c++"),
+                .linkedFramework("SystemConfiguration"),
+            ]
+        ),
     ]
 )

@@ -1,0 +1,4 @@
+module CMeikiPopFFI [system] {
+    header "meikipop_ffi.h"
+    export *
+}

@@ -27,16 +27,24 @@
 !/apps/gui-swift/
 !/apps/gui-swift/Package.swift
 !/apps/gui-swift/README.md
+!/apps/gui-swift/CMeikiPopFFI/
+!/apps/gui-swift/CMeikiPopFFI/**
 !/apps/gui-swift/Sources/
 !/apps/gui-swift/Sources/**
 
-# Native Rust library.
-!/native/
-!/native/Cargo.lock
-!/native/Cargo.toml
-!/native/README.md
-!/native/src/
-!/native/src/**
+# Rust libraries.
+!/crates/
+!/crates/native/
+!/crates/native/Cargo.lock
+!/crates/native/Cargo.toml
+!/crates/native/README.md
+!/crates/native/src/
+!/crates/native/src/**
+!/crates/native-ffi/
+!/crates/native-ffi/Cargo.lock
+!/crates/native-ffi/Cargo.toml
+!/crates/native-ffi/src/
+!/crates/native-ffi/src/**
 
 # Shared application resources and development scripts.
 !/resources/
