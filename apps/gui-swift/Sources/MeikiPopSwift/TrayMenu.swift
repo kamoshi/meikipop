@@ -1,0 +1,78 @@
+import AppKit
+import SwiftUI
+
+struct TrayMenu: Scene {
+    @ObservedObject var settings: AppSettings
+    @State private var isPaused = false
+
+    var body: some Scene {
+        MenuBarExtra("MeikiPop", systemImage: "character.book.closed") {
+            SettingsLink {
+                Text("Settings")
+            }
+
+            Divider()
+
+            Menu("OCR Provider") {
+                Picker("OCR Provider", selection: persistedBinding(\.ocrProvider)) {
+                    ForEach(OCRProvider.allCases) { provider in
+                        Text(provider.title).tag(provider)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            }
+
+            Divider()
+
+            Menu("Scan mode") {
+                Picker("Scan mode", selection: persistedBinding(\.scanMode)) {
+                    ForEach(ScanMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            }
+
+            Menu("Scan area") {
+                Picker("Scan area", selection: persistedBinding(\.scanArea)) {
+                    Text("Custom Region").tag(ScanAreaSelection.customRegion)
+                    ForEach(Array(settings.displays.enumerated()), id: \.element.id) { index, display in
+                        Text(display.title(number: index + 1)).tag(display.selectionID)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            }
+
+            Divider()
+
+            Toggle("Pause meikipop", isOn: $isPaused)
+
+            Divider()
+
+            Button("Quit") {
+                NSApplication.shared.terminate(nil)
+            }
+            .keyboardShortcut("q")
+        }
+        .menuBarExtraStyle(.menu)
+    }
+
+    private func persistedBinding<Value>(
+        _ keyPath: WritableKeyPath<AppConfiguration.General, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { settings.configuration.general[keyPath: keyPath] },
+            set: { value in
+                settings.configuration.general[keyPath: keyPath] = value
+                do {
+                    try settings.save()
+                } catch {
+                    NSLog("Could not save MeikiPop tray setting: %@", error.localizedDescription)
+                }
+            }
+        )
+    }
+}

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use screencapturekit::cv::CVPixelBufferLockFlags;
 use screencapturekit::prelude::*;
 
-use crate::screenshot::interface::{FrameProvider, Monitor, Screenshot};
+use crate::screenshot::interface::{DisplayDescriptor, FrameProvider, Monitor, Screenshot};
 
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -167,6 +167,23 @@ impl ScreenCaptureKitFrameProvider {
             }
         }
     }
+}
+
+pub fn discover_displays() -> Result<Vec<DisplayDescriptor>, Box<dyn Error>> {
+    let content = SCShareableContent::get()?;
+    Ok(content
+        .displays()
+        .into_iter()
+        .filter_map(|display| {
+            monitor_from_display(&display).map(|monitor| DisplayDescriptor {
+                id: display.display_id(),
+                top: monitor.top,
+                left: monitor.left,
+                width: monitor.width,
+                height: monitor.height,
+            })
+        })
+        .collect())
 }
 
 impl FrameProvider for ScreenCaptureKitFrameProvider {

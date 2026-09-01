@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use meikipop_native::dictionary::lookup::{DictionaryEntry, KanjiEntry, Sense};
 use meikipop_native::pipeline::{Pipeline, PipelineConfig, PipelineEvent};
+use meikipop_native::platform::discover_displays;
 use serde::Serialize;
 
 const MAX_DICT_ENTRIES: usize = 10;
@@ -75,6 +76,15 @@ struct Kanji {
     readings: Vec<String>,
 }
 
+#[derive(Serialize)]
+struct Display {
+    id: u32,
+    top: i32,
+    left: i32,
+    width: usize,
+    height: usize,
+}
+
 impl From<KanjiEntry> for Kanji {
     fn from(kanji: KanjiEntry) -> Self {
         Self {
@@ -94,6 +104,53 @@ impl From<PipelineEvent> for Event {
             },
             PipelineEvent::HidePopup => Self::Hide,
             PipelineEvent::Error(message) => Self::Error { message },
+        }
+    }
+}
+
+/// Returns the physical displays currently available for capture as JSON.
+///
+/// On failure, returns null and stores a Rust-owned error string in
+/// `error_out`. Release either returned string with `meikipop_string_free`.
+///
+/// # Safety
+/// `error_out`, when non-null, must be valid for writing one pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meikipop_displays_json(error_out: *mut *mut c_char) -> *mut c_char {
+    if !error_out.is_null() {
+        // SAFETY: Guaranteed by the function contract.
+        unsafe { *error_out = ptr::null_mut() };
+    }
+
+    let displays = match discover_displays() {
+        Ok(displays) => displays
+            .into_iter()
+            .map(|display| Display {
+                id: display.id,
+                top: display.top,
+                left: display.left,
+                width: display.width,
+                height: display.height,
+            })
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            set_error(error_out, error.to_string());
+            return ptr::null_mut();
+        }
+    };
+
+    let json = match serde_json::to_string(&displays) {
+        Ok(json) => json,
+        Err(error) => {
+            set_error(error_out, error.to_string());
+            return ptr::null_mut();
+        }
+    };
+    match CString::new(json) {
+        Ok(json) => json.into_raw(),
+        Err(error) => {
+            set_error(error_out, error.to_string());
+            ptr::null_mut()
         }
     }
 }

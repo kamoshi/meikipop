@@ -11,6 +11,15 @@ pub struct Monitor {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisplayDescriptor {
+    pub id: u32,
+    pub top: i32,
+    pub left: i32,
+    pub width: usize,
+    pub height: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Screenshot {
     pub raw: Vec<u8>,
     pub width: usize,
