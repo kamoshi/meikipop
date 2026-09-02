@@ -2,8 +2,13 @@
 
 NIX := nix develop -c
 CARGO := $(NIX) cargo
-SWIFT := $(NIX) swift
 HOST_OS := $(shell uname -s)
+
+ifeq ($(HOST_OS),Darwin)
+SWIFT := swift
+else
+SWIFT := $(NIX) swift
+endif
 
 NATIVE_MANIFEST := crates/native/Cargo.toml
 NATIVE_FFI_MANIFEST := crates/native-ffi/Cargo.toml
@@ -43,6 +48,7 @@ run-slint:
 ifeq ($(HOST_OS),Darwin)
 run-swift:
 	$(CARGO) build --release --manifest-path $(NATIVE_FFI_MANIFEST)
+	@rm -f $(SWIFT_PACKAGE)/.build/*/release/MeikiPopSwift $(SWIFT_PACKAGE)/.build/release/MeikiPopSwift
 	MEIKIPOP_NATIVE_PROFILE=release $(SWIFT) run -c release --package-path $(SWIFT_PACKAGE)
 else
 run-swift:
@@ -63,6 +69,7 @@ build-slint:
 
 ifeq ($(HOST_OS),Darwin)
 build-swift: build-native-ffi
+	@rm -f $(SWIFT_PACKAGE)/.build/*/debug/MeikiPopSwift $(SWIFT_PACKAGE)/.build/debug/MeikiPopSwift
 	$(SWIFT) build --package-path $(SWIFT_PACKAGE)
 else
 build-swift:

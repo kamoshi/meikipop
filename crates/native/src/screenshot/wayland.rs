@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::screenshot::interface::{FrameProvider, Monitor, Screenshot};
+use crate::screenshot::interface::{CaptureGeometry, CapturedFrame, FrameProvider, Screenshot};
 use ashpd::desktop::screencast::{
     CursorMode, Screencast, SelectSourcesOptions, SourceType, Stream,
 };
@@ -20,7 +20,7 @@ use pw::spa;
 use spa::buffer::meta::MetaCursor;
 use spa::pod::Pod;
 
-use crate::input::interface::PointerProvider;
+use crate::input::interface::{PointerProvider, PointerSnapshot};
 
 #[derive(Clone)]
 struct Frame {
@@ -36,6 +36,7 @@ struct Frame {
 #[derive(Default)]
 struct CaptureState {
     frame: Option<Frame>,
+    frame_sequence: u64,
     pointer: Option<(i32, i32)>,
     error: Option<String>,
     stopped: bool,
@@ -50,6 +51,7 @@ struct SharedCapture {
 impl SharedCapture {
     fn set_frame(&self, frame: Frame) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.frame_sequence = state.frame_sequence.wrapping_add(1);
         state.frame = Some(frame);
         self.changed.notify_all();
     }
@@ -504,13 +506,13 @@ impl WaylandCapture {
         self.shared.wait_ready(timeout)
     }
 
-    fn latest_frame(&self) -> Option<Frame> {
-        self.shared
+    fn latest_frame(&self) -> Option<(u64, Frame)> {
+        let state = self
+            .shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .frame
-            .clone()
+            .unwrap_or_else(|error| error.into_inner());
+        Some((state.frame_sequence, state.frame.clone()?))
     }
 }
 
@@ -541,16 +543,16 @@ impl ScreenCastManager {
         }
     }
 
-    fn request_frame(&self) -> Result<Frame, Box<dyn Error>> {
+    fn request_frame(&self) -> Result<(u64, Frame), Box<dyn Error>> {
         self.capture
             .latest_frame()
             .ok_or_else(|| "Invalid frame received".into())
     }
 }
 
-pub struct MssWaylandShim {
+/// Captures the single source selected through the desktop ScreenCast portal.
+pub struct WaylandFrameProvider {
     screencast: ScreenCastManager,
-    monitors: Vec<Monitor>,
 }
 
 pub struct WaylandPointerProvider {
@@ -558,26 +560,37 @@ pub struct WaylandPointerProvider {
 }
 
 impl PointerProvider for WaylandPointerProvider {
-    fn position(&mut self) -> Result<(i32, i32), Box<dyn Error>> {
-        self.shared
+    fn snapshot(&mut self) -> Result<PointerSnapshot, Box<dyn Error>> {
+        let state = self
+            .shared
             .state
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(|error| error.into_inner());
+        let position = state
             .pointer
-            .ok_or_else(|| "The Wayland screencast has not provided cursor metadata yet".into())
+            .ok_or("The Wayland screencast has not provided cursor metadata yet")?;
+        let frame = state
+            .frame
+            .as_ref()
+            .ok_or("The Wayland screencast has not provided a frame yet")?;
+        Ok(PointerSnapshot {
+            position,
+            capture_geometry: Some(CaptureGeometry {
+                top: frame.top,
+                left: frame.left,
+                width: frame.logical_width,
+                height: frame.logical_height,
+            }),
+            target_available: true,
+        })
     }
 }
 
-impl MssWaylandShim {
+impl WaylandFrameProvider {
     pub fn new(token_path: String) -> Result<Self, Box<dyn Error>> {
         let screencast = ScreenCastManager::new(token_path)?;
         screencast.wait_until_ready()?;
-        let mut shim = Self {
-            screencast,
-            monitors: Vec::new(),
-        };
-        shim._create_monitors()?;
-        Ok(shim)
+        Ok(Self { screencast })
     }
 
     pub fn pointer_provider(&self) -> WaylandPointerProvider {
@@ -586,41 +599,42 @@ impl MssWaylandShim {
         }
     }
 
-    fn _create_monitors(&mut self) -> Result<(), Box<dyn Error>> {
-        self.monitors = Vec::new();
-
-        let frame = self.screencast.request_frame()?;
-        let fake_monitor = Monitor {
+    fn selected_geometry(&self) -> Result<CaptureGeometry, Box<dyn Error>> {
+        let (_, frame) = self.screencast.request_frame()?;
+        Ok(CaptureGeometry {
             top: frame.top,
             left: frame.left,
             width: frame.logical_width,
             height: frame.logical_height,
-        };
-
-        // Match mss: monitor 0 is the virtual desktop and physical monitors
-        // start at index 1. The portal provides one selected stream.
-        self.monitors.push(fake_monitor.clone());
-        self.monitors.push(fake_monitor);
-        Ok(())
+        })
     }
 
-    fn _grab_screenshot(&self, _monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
-        let frame = self.screencast.request_frame()?;
-        Ok(Screenshot {
-            raw: frame.data.as_ref().clone(),
-            width: frame.width,
-            height: frame.height,
+    fn latest_captured_frame(&self) -> Result<CapturedFrame, Box<dyn Error>> {
+        let (sequence, frame) = self.screencast.request_frame()?;
+        Ok(CapturedFrame {
+            sequence,
+            geometry: CaptureGeometry {
+                top: frame.top,
+                left: frame.left,
+                width: frame.logical_width,
+                height: frame.logical_height,
+            },
+            screenshot: Screenshot {
+                raw: frame.data.as_ref().clone(),
+                width: frame.width,
+                height: frame.height,
+            },
         })
     }
 }
 
-impl FrameProvider for MssWaylandShim {
-    fn monitors(&mut self) -> Result<Vec<Monitor>, Box<dyn Error>> {
-        Ok(self.monitors.clone())
+impl FrameProvider for WaylandFrameProvider {
+    fn capture_geometry(&mut self) -> Result<CaptureGeometry, Box<dyn Error>> {
+        self.selected_geometry()
     }
 
-    fn frame(&mut self, monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
-        self._grab_screenshot(monitor)
+    fn capture_frame(&mut self) -> Result<CapturedFrame, Box<dyn Error>> {
+        self.latest_captured_frame()
     }
 }
 

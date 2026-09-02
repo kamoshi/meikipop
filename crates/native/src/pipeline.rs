@@ -1,24 +1,23 @@
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, SendTimeoutError, Sender};
 
 use crate::dictionary::lookup::{DictionaryEntry, KanjiEntry, LookupEngine};
-use crate::input::interface::PointerProvider;
+use crate::input::interface::{PointerProvider, PointerSnapshot};
 use crate::ocr::hit_scan::hit_scan;
-use crate::ocr::interface::Paragraph;
+use crate::ocr::interface::{NormalizedPoint, OcrContext, Paragraph};
 use crate::ocr::ocr::OcrProcessor;
 use crate::platform::create_desktop_providers;
-use crate::screenshot::interface::{FrameProvider, Monitor, Screenshot};
+use crate::screenshot::interface::{CaptureGeometry, CapturedFrame, FrameProvider};
 
 pub struct PipelineConfig {
     pub dictionary_path: PathBuf,
     pub screencast_token_path: PathBuf,
-    pub monitor_index: usize,
     pub max_dict_entries: usize,
     pub max_lookup_length: usize,
     pub show_kanji: bool,
@@ -33,7 +32,7 @@ pub enum PipelineEvent {
         kanji: Option<KanjiEntry>,
         mouse_x: i32,
         mouse_y: i32,
-        monitor: Monitor,
+        capture_geometry: CaptureGeometry,
     },
     HidePopup {
         mouse_x: i32,
@@ -140,6 +139,18 @@ struct LookupRequest {
     lookup_string: Option<String>,
     mouse_x: i32,
     mouse_y: i32,
+    capture_geometry: CaptureGeometry,
+}
+
+struct OcrWorkItem {
+    frame: CapturedFrame,
+    pointer: PointerSnapshot,
+}
+
+struct RecognizedFrame {
+    sequence: u64,
+    paragraphs: Vec<Paragraph>,
+    capture_geometry: CaptureGeometry,
 }
 
 fn run_pipeline(
@@ -151,27 +162,22 @@ fn run_pipeline(
     event_sender: Sender<PipelineEvent>,
 ) {
     log::debug!("Initializing native OCR pipeline");
-    let monitor = match frame_provider
-        .monitors()
+    let capture_geometry = match frame_provider
+        .capture_geometry()
         .map_err(|error| error.to_string())
-        .and_then(|monitors| {
-            monitors
-                .get(config.monitor_index)
-                .cloned()
-                .ok_or_else(|| "No monitor found".to_owned())
-        }) {
-        Ok(monitor) => monitor,
+    {
+        Ok(geometry) => geometry,
         Err(error) => {
-            send_error(&event_sender, "Failed to get monitor", error);
+            send_error(&event_sender, "Failed to get capture geometry", error);
             return;
         }
     };
     log::info!(
-        "Selected scan monitor: left={}, top={}, width={}, height={}",
-        monitor.left,
-        monitor.top,
-        monitor.width,
-        monitor.height
+        "Selected capture source: left={}, top={}, width={}, height={}",
+        capture_geometry.left,
+        capture_geometry.top,
+        capture_geometry.width,
+        capture_geometry.height
     );
     let _ = event_sender.send(PipelineEvent::CaptureReady);
 
@@ -210,14 +216,23 @@ fn run_pipeline(
     let (screenshot_sender, screenshot_receiver) = crossbeam_channel::bounded(1);
     let (ocr_sender, ocr_receiver) = crossbeam_channel::bounded(1);
     let (lookup_sender, lookup_receiver) = crossbeam_channel::bounded(1);
+    let latest_pointer = Arc::new(Mutex::new(None));
 
     let workers = vec![
+        spawn_hit_scan_worker(
+            Arc::clone(&running),
+            pointer_provider,
+            capture_geometry.clone(),
+            Arc::clone(&latest_pointer),
+            ocr_receiver,
+            lookup_sender,
+        ),
         spawn_capture_worker(
             Arc::clone(&running),
             Arc::clone(&popup_is_visible),
             frame_provider,
-            monitor.clone(),
             config.capture_interval,
+            Arc::clone(&latest_pointer),
             screenshot_sender,
         ),
         spawn_ocr_worker(
@@ -226,18 +241,10 @@ fn run_pipeline(
             screenshot_receiver,
             ocr_sender,
         ),
-        spawn_hit_scan_worker(
-            Arc::clone(&running),
-            pointer_provider,
-            monitor.clone(),
-            ocr_receiver,
-            lookup_sender,
-        ),
         spawn_lookup_worker(
             Arc::clone(&running),
             Arc::clone(&popup_is_visible),
             lookup_engine,
-            monitor,
             config.max_lookup_length,
             config.show_kanji,
             lookup_receiver,
@@ -254,9 +261,9 @@ fn spawn_capture_worker(
     running: Arc<AtomicBool>,
     popup_is_visible: Arc<AtomicBool>,
     mut frame_provider: Box<dyn FrameProvider>,
-    monitor: Monitor,
     capture_interval: Duration,
-    screenshot_sender: Sender<Screenshot>,
+    latest_pointer: Arc<Mutex<Option<PointerSnapshot>>>,
+    screenshot_sender: Sender<OcrWorkItem>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("ScreencastWorker".to_owned())
@@ -268,9 +275,21 @@ fn spawn_capture_worker(
                     continue;
                 }
 
-                match frame_provider.frame(&monitor) {
-                    Ok(screenshot) => {
-                        if !send_while_running(&screenshot_sender, screenshot, &running) {
+                match frame_provider.capture_frame() {
+                    Ok(frame) => {
+                        let pointer = latest_pointer
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .clone();
+                        let Some(pointer) = pointer else {
+                            thread::sleep(capture_interval);
+                            continue;
+                        };
+                        if !send_while_running(
+                            &screenshot_sender,
+                            OcrWorkItem { frame, pointer },
+                            &running,
+                        ) {
                             break;
                         }
                     }
@@ -286,29 +305,42 @@ fn spawn_capture_worker(
 fn spawn_ocr_worker(
     running: Arc<AtomicBool>,
     mut ocr_processor: OcrProcessor,
-    screenshot_receiver: Receiver<Screenshot>,
-    ocr_sender: Sender<Vec<Paragraph>>,
+    screenshot_receiver: Receiver<OcrWorkItem>,
+    ocr_sender: Sender<RecognizedFrame>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("OcrWorker".to_owned())
         .spawn(move || {
-            let mut last_raw_frame: Option<Vec<u8>> = None;
+            let mut last_scan: Option<(Vec<u8>, NormalizedPoint)> = None;
             log::debug!("OCR worker started");
             while running.load(Ordering::Acquire) {
-                let screenshot = match screenshot_receiver.recv_timeout(Duration::from_millis(50)) {
-                    Ok(screenshot) => screenshot,
+                let work = match screenshot_receiver.recv_timeout(Duration::from_millis(50)) {
+                    Ok(work) => work,
                     Err(RecvTimeoutError::Timeout) => continue,
                     Err(RecvTimeoutError::Disconnected) => break,
                 };
 
-                if last_raw_frame.as_ref() == Some(&screenshot.raw) {
+                if !work.pointer.target_available {
+                    continue;
+                }
+                let Some(focus_point) =
+                    normalized_pointer_position(work.pointer.position, &work.frame.geometry)
+                else {
+                    continue;
+                };
+                let context = OcrContext {
+                    focus_point: Some(focus_point),
+                };
+                if last_scan.as_ref().is_some_and(|(raw, previous_focus)| {
+                    raw == &work.frame.screenshot.raw && *previous_focus == focus_point
+                }) {
                     continue;
                 }
 
                 let ocr_start = std::time::Instant::now();
                 let result = (|| -> Result<Vec<Paragraph>, Box<dyn Error>> {
-                    let image = screenshot.to_rgb()?;
-                    ocr_processor.scan_rgb(&image)?;
+                    let image = work.frame.screenshot.to_rgb()?;
+                    ocr_processor.scan_rgb(&image, context)?;
                     Ok(ocr_processor.last_ocr_result.take().unwrap_or_default())
                 })();
 
@@ -319,9 +351,17 @@ fn spawn_ocr_worker(
                             ocr_start.elapsed(),
                             paragraphs.len()
                         );
-                        // Only suppress an identical frame after OCR succeeded.
-                        last_raw_frame = Some(screenshot.raw);
-                        if !send_while_running(&ocr_sender, paragraphs, &running) {
+                        // Only suppress an identical frame and focus point after OCR succeeded.
+                        last_scan = Some((work.frame.screenshot.raw, focus_point));
+                        if !send_while_running(
+                            &ocr_sender,
+                            RecognizedFrame {
+                                sequence: work.frame.sequence,
+                                paragraphs,
+                                capture_geometry: work.frame.geometry,
+                            },
+                            &running,
+                        ) {
                             break;
                         }
                     }
@@ -336,26 +376,28 @@ fn spawn_ocr_worker(
 fn spawn_hit_scan_worker(
     running: Arc<AtomicBool>,
     mut pointer_provider: Box<dyn PointerProvider>,
-    monitor: Monitor,
-    ocr_receiver: Receiver<Vec<Paragraph>>,
+    capture_geometry: CaptureGeometry,
+    latest_pointer: Arc<Mutex<Option<PointerSnapshot>>>,
+    ocr_receiver: Receiver<RecognizedFrame>,
     lookup_sender: Sender<LookupRequest>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("HitScannerWorker".to_owned())
         .spawn(move || {
             log::debug!("Mouse tracker and hit scanner worker started");
-            let mut paragraphs = Vec::new();
+            let mut recognized_frame: Option<RecognizedFrame> = None;
             let mut last_mouse_pos = None;
+            let mut last_capture_geometry = None;
+            let mut last_target_available = None;
+            let mut last_ocr_sequence = None;
             let mut last_pointer_error = None;
 
             while running.load(Ordering::Acquire) {
-                let mut ocr_changed = false;
-                while let Ok(latest_paragraphs) = ocr_receiver.try_recv() {
-                    paragraphs = latest_paragraphs;
-                    ocr_changed = true;
+                while let Ok(latest_frame) = ocr_receiver.try_recv() {
+                    recognized_frame = Some(latest_frame);
                 }
 
-                let pointer = match pointer_provider.position() {
+                let pointer = match pointer_provider.snapshot() {
                     Ok(pointer) => {
                         last_pointer_error = None;
                         pointer
@@ -370,28 +412,51 @@ fn spawn_hit_scan_worker(
                         continue;
                     }
                 };
+                *latest_pointer
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(pointer.clone());
 
-                if last_mouse_pos == Some(pointer) && !ocr_changed {
+                let active_geometry = pointer
+                    .capture_geometry
+                    .clone()
+                    .unwrap_or_else(|| capture_geometry.clone());
+                let ocr_sequence = recognized_frame.as_ref().map(|frame| frame.sequence);
+                let ocr_changed = last_ocr_sequence != ocr_sequence;
+                if !lookup_input_changed(
+                    last_mouse_pos,
+                    last_capture_geometry.as_ref(),
+                    last_target_available,
+                    pointer.position,
+                    &active_geometry,
+                    pointer.target_available,
+                    ocr_changed,
+                ) {
                     thread::sleep(Duration::from_millis(20));
                     continue;
                 }
-                last_mouse_pos = Some(pointer);
+                last_mouse_pos = Some(pointer.position);
+                last_capture_geometry = Some(active_geometry.clone());
+                last_target_available = Some(pointer.target_available);
+                last_ocr_sequence = ocr_sequence;
 
-                let norm_x = (pointer.0 - monitor.left) as f64 / monitor.width as f64;
-                let norm_y = (pointer.1 - monitor.top) as f64 / monitor.height as f64;
-                let lookup_string =
-                    if (0.0..=1.0).contains(&norm_x) && (0.0..=1.0).contains(&norm_y) {
-                        hit_scan(&paragraphs, norm_x, norm_y)
-                    } else {
-                        None
-                    };
+                let geometry_matches_ocr = recognized_frame.as_ref().is_some_and(|frame| {
+                    frame.capture_geometry.width == active_geometry.width
+                        && frame.capture_geometry.height == active_geometry.height
+                });
+                let lookup_string = (pointer.target_available && geometry_matches_ocr)
+                    .then(|| normalized_pointer_position(pointer.position, &active_geometry))
+                    .flatten()
+                    .and_then(|point| {
+                        hit_scan(&recognized_frame.as_ref()?.paragraphs, point.x, point.y)
+                    });
 
                 if !send_while_running(
                     &lookup_sender,
                     LookupRequest {
                         lookup_string,
-                        mouse_x: pointer.0,
-                        mouse_y: pointer.1,
+                        mouse_x: pointer.position.0,
+                        mouse_y: pointer.position.1,
+                        capture_geometry: active_geometry,
                     },
                     &running,
                 ) {
@@ -404,11 +469,40 @@ fn spawn_hit_scan_worker(
         .expect("failed to spawn HitScannerWorker")
 }
 
+fn lookup_input_changed(
+    last_pointer: Option<(i32, i32)>,
+    last_capture_geometry: Option<&CaptureGeometry>,
+    last_target_available: Option<bool>,
+    pointer: (i32, i32),
+    capture_geometry: &CaptureGeometry,
+    target_available: bool,
+    ocr_changed: bool,
+) -> bool {
+    ocr_changed
+        || last_pointer != Some(pointer)
+        || last_capture_geometry != Some(capture_geometry)
+        || last_target_available != Some(target_available)
+}
+
+fn normalized_pointer_position(
+    pointer: (i32, i32),
+    capture_geometry: &CaptureGeometry,
+) -> Option<NormalizedPoint> {
+    if !capture_geometry.contains(pointer) {
+        return None;
+    }
+
+    let x = (i64::from(pointer.0) - i64::from(capture_geometry.left)) as f64
+        / capture_geometry.width as f64;
+    let y = (i64::from(pointer.1) - i64::from(capture_geometry.top)) as f64
+        / capture_geometry.height as f64;
+    Some(NormalizedPoint { x, y })
+}
+
 fn spawn_lookup_worker(
     running: Arc<AtomicBool>,
     popup_is_visible: Arc<AtomicBool>,
     mut lookup_engine: LookupEngine,
-    monitor: Monitor,
     max_lookup_length: usize,
     show_kanji: bool,
     lookup_receiver: Receiver<LookupRequest>,
@@ -430,13 +524,13 @@ fn spawn_lookup_worker(
                         lookup_engine.lookup_cached(&lookup_string, max_lookup_length, show_kanji);
                     if !result.entries.is_empty() || result.kanji_entry.is_some() {
                         log::debug!(
-                            "Sending lookup result at mouse ({}, {}) on monitor left={}, top={}, width={}, height={}",
+                            "Sending lookup result at mouse ({}, {}) in capture source left={}, top={}, width={}, height={}",
                             request.mouse_x,
                             request.mouse_y,
-                            monitor.left,
-                            monitor.top,
-                            monitor.width,
-                            monitor.height
+                            request.capture_geometry.left,
+                            request.capture_geometry.top,
+                            request.capture_geometry.width,
+                            request.capture_geometry.height
                         );
                         if event_sender
                             .send(PipelineEvent::LookupResult {
@@ -444,7 +538,7 @@ fn spawn_lookup_worker(
                                 kanji: result.kanji_entry,
                                 mouse_x: request.mouse_x,
                                 mouse_y: request.mouse_y,
-                                monitor: monitor.clone(),
+                                capture_geometry: request.capture_geometry,
                             })
                             .is_err()
                         {
@@ -498,4 +592,90 @@ fn hide_popup_if_visible(
 fn send_error(sender: &Sender<PipelineEvent>, context: &str, error: impl std::fmt::Display) {
     log::error!("{context}: {error}");
     let _ = sender.send(PipelineEvent::Error(format!("{context}: {error}")));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{lookup_input_changed, normalized_pointer_position};
+    use crate::ocr::interface::NormalizedPoint;
+    use crate::screenshot::interface::CaptureGeometry;
+
+    fn geometry(left: i32, top: i32, width: usize, height: usize) -> CaptureGeometry {
+        CaptureGeometry {
+            left,
+            top,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn capture_source_movement_invalidates_a_stationary_pointer_lookup() {
+        let previous = geometry(0, 0, 800, 600);
+        let moved = geometry(100, 50, 800, 600);
+
+        assert!(lookup_input_changed(
+            Some((200, 150)),
+            Some(&previous),
+            Some(true),
+            (200, 150),
+            &moved,
+            true,
+            false,
+        ));
+        assert!(!lookup_input_changed(
+            Some((200, 150)),
+            Some(&moved),
+            Some(true),
+            (200, 150),
+            &moved,
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn target_occlusion_invalidates_a_stationary_pointer_lookup() {
+        let target = geometry(0, 0, 800, 600);
+
+        assert!(lookup_input_changed(
+            Some((200, 150)),
+            Some(&target),
+            Some(true),
+            (200, 150),
+            &target,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn pointer_normalization_rejects_invalid_or_outside_geometry() {
+        assert_eq!(
+            normalized_pointer_position((150, 100), &geometry(100, 50, 200, 100)),
+            Some(NormalizedPoint { x: 0.25, y: 0.5 }),
+        );
+        assert_eq!(
+            normalized_pointer_position((99, 100), &geometry(100, 50, 200, 100)),
+            None,
+        );
+        assert_eq!(
+            normalized_pointer_position((300, 100), &geometry(100, 50, 200, 100)),
+            None,
+        );
+        assert_eq!(
+            normalized_pointer_position((100, 50), &geometry(100, 50, 0, 100)),
+            None,
+        );
+        assert_eq!(
+            normalized_pointer_position(
+                (i32::MAX - 1, 0),
+                &geometry(i32::MIN, 0, u32::MAX as usize, 1),
+            ),
+            Some(NormalizedPoint {
+                x: (u32::MAX as f64 - 1.0) / u32::MAX as f64,
+                y: 0.0,
+            }),
+        );
+    }
 }

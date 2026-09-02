@@ -2,12 +2,27 @@ use std::error::Error;
 
 pub type RgbImage = image::RgbImage;
 
+/// Logical desktop coordinates occupied by the source selected for capture.
+///
+/// A source may be a display, a window, or another platform-defined region.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Monitor {
+pub struct CaptureGeometry {
     pub top: i32,
     pub left: i32,
     pub width: usize,
     pub height: usize,
+}
+
+impl CaptureGeometry {
+    pub fn contains(&self, point: (i32, i32)) -> bool {
+        let right = self
+            .left
+            .saturating_add_unsigned(self.width.min(u32::MAX as usize) as u32);
+        let bottom = self
+            .top
+            .saturating_add_unsigned(self.height.min(u32::MAX as usize) as u32);
+        point.0 >= self.left && point.0 < right && point.1 >= self.top && point.1 < bottom
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -15,6 +30,14 @@ pub struct Screenshot {
     pub raw: Vec<u8>,
     pub width: usize,
     pub height: usize,
+}
+
+/// A frame and the logical desktop geometry it represented when captured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedFrame {
+    pub sequence: u64,
+    pub screenshot: Screenshot,
+    pub geometry: CaptureGeometry,
 }
 
 impl Screenshot {
@@ -50,6 +73,10 @@ impl Screenshot {
 }
 
 pub trait FrameProvider: Send {
-    fn monitors(&mut self) -> Result<Vec<Monitor>, Box<dyn Error>>;
-    fn frame(&mut self, monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>>;
+    /// Returns the current logical geometry of the system-selected source.
+    fn capture_geometry(&mut self) -> Result<CaptureGeometry, Box<dyn Error>>;
+
+    /// Returns a frame together with the geometry that produced it.
+    /// Implementations must not pair a cached frame with newer geometry.
+    fn capture_frame(&mut self) -> Result<CapturedFrame, Box<dyn Error>>;
 }

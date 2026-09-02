@@ -4,7 +4,7 @@
 use super::ocr::{MeikiOcr, OcrResult};
 
 // Import the "contract" classes from your application's interface
-use crate::ocr::interface::{BoundingBox, Mat, OcrProvider, Paragraph, Word};
+use crate::ocr::interface::{BoundingBox, Mat, OcrContext, OcrProvider, Paragraph, Word};
 use crate::ocr::providers::postprocessing::group_lines_into_paragraphs;
 
 // --- pipeline configuration ---
@@ -139,7 +139,11 @@ impl OcrProvider for MeikiOcrProvider {
         "meikiocr (local)"
     }
 
-    fn scan(&mut self, image: &Mat) -> Result<Vec<Paragraph>, Box<dyn std::error::Error>> {
+    fn scan(
+        &mut self,
+        image: &Mat,
+        _context: OcrContext,
+    ) -> Result<Vec<Paragraph>, Box<dyn std::error::Error>> {
         MeikiOcrProvider::scan(self, image)
     }
 }

@@ -1,7 +1,7 @@
 // meikipop/ocr/providers/dummy/provider.rs
 
 // The "contract" classes that a new provider MUST use for its return value.
-use crate::ocr::interface::{BoundingBox, OcrProvider, Paragraph, Word};
+use crate::ocr::interface::{BoundingBox, OcrContext, OcrProvider, Paragraph, Word};
 
 /// A template for creating new OCR providers.
 ///
@@ -149,6 +149,7 @@ impl OcrProvider for DummyProvider {
     fn scan(
         &mut self,
         image: &crate::ocr::interface::Mat,
+        _context: OcrContext,
     ) -> Result<Vec<Paragraph>, Box<dyn std::error::Error>> {
         DummyProvider::scan(image.width() as usize, image.height() as usize)
             .map_err(|error| error.into())
@@ -229,6 +230,12 @@ mod tests {
         let image = Mat::new(800, 600);
 
         assert_eq!(provider.name(), DummyProvider::NAME);
-        assert_eq!(provider.scan(&image).unwrap().len(), 2);
+        assert_eq!(
+            provider
+                .scan(&image, crate::ocr::interface::OcrContext::default())
+                .unwrap()
+                .len(),
+            2
+        );
     }
 }

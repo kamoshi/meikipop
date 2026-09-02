@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::time::{Duration, Instant};
 
-use crate::screenshot::interface::{FrameProvider, Monitor, RgbImage, Screenshot};
+use crate::screenshot::interface::{CaptureGeometry, FrameProvider, RgbImage, Screenshot};
 
 #[derive(Clone, Debug)]
 pub struct ScreenManagerConfig {
@@ -28,9 +28,8 @@ pub trait ScreenManagerRuntime {
     fn log_error(&mut self, error: &dyn Error);
 }
 
-// todo doesnt work when monitors change
 pub struct ScreenManager<B> {
-    pub monitor: Option<Monitor>,
+    pub capture_geometry: Option<CaptureGeometry>,
     pub last_ocr_put_time: Option<Instant>,
     pub last_screenshot: Option<Screenshot>,
     pub last_mouse_pos: Option<(i32, i32)>,
@@ -40,7 +39,7 @@ pub struct ScreenManager<B> {
 impl<B: FrameProvider> ScreenManager<B> {
     pub fn new(frame_provider: B) -> Self {
         Self {
-            monitor: None,
+            capture_geometry: None,
             last_ocr_put_time: None,
             last_screenshot: None,
             last_mouse_pos: None,
@@ -142,38 +141,19 @@ impl<B: FrameProvider> ScreenManager<B> {
     }
 
     pub fn take_screenshot(&mut self) -> Result<Screenshot, Box<dyn Error>> {
-        let monitor = self.monitor.as_ref().ok_or("scan monitor is not set")?;
-        self.frame_provider.frame(monitor)
+        Ok(self.frame_provider.capture_frame()?.screenshot)
     }
 
-    pub fn set_scan_region(&mut self, scan_rect: Option<Monitor>) -> bool {
-        if let Some(scan_rect) = scan_rect {
-            log::info!("Set scan area to region {scan_rect:?}");
-            self.monitor = Some(scan_rect);
-            true
-        } else {
-            log::info!("Region selection cancelled.");
-            false
-        }
-    }
-
-    pub fn set_scan_screen(&mut self, screen_index: usize) -> Result<(), Box<dyn Error>> {
-        log::info!("Set scan area to screen {screen_index}");
-        let monitors = self.frame_provider.monitors()?;
-        if screen_index < monitors.len() {
-            log::info!("Set scan area to screen {screen_index}");
-            self.monitor = Some(monitors[screen_index].clone());
-        } else {
-            log::error!("Cannot set scan screen: index {screen_index} is out of bounds.");
-        }
+    pub fn refresh_capture_geometry(&mut self) -> Result<(), Box<dyn Error>> {
+        self.capture_geometry = Some(self.frame_provider.capture_geometry()?);
         Ok(())
     }
 
-    pub fn get_scan_geometry(&self) -> (i32, i32, usize, usize) {
-        let Some(monitor) = &self.monitor else {
+    pub fn get_capture_geometry(&self) -> (i32, i32, usize, usize) {
+        let Some(geometry) = &self.capture_geometry else {
             return (0, 0, 0, 0);
         };
-        (monitor.left, monitor.top, monitor.width, monitor.height)
+        (geometry.left, geometry.top, geometry.width, geometry.height)
     }
 
     pub fn force_screenshot_trigger(&mut self) {
@@ -193,31 +173,31 @@ impl<B: FrameProvider> ScreenManager<B> {
             runtime.trigger_hit_scan();
         }
     }
-
-    pub fn get_screens(&mut self) -> Result<Vec<Monitor>, Box<dyn Error>> {
-        self.frame_provider.monitors()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screenshot::interface::CapturedFrame;
     use std::collections::VecDeque;
 
     struct FakeFrameProvider {
-        monitors: Vec<Monitor>,
+        geometry: CaptureGeometry,
         screenshots: VecDeque<Screenshot>,
     }
 
     impl FrameProvider for FakeFrameProvider {
-        fn monitors(&mut self) -> Result<Vec<Monitor>, Box<dyn Error>> {
-            Ok(self.monitors.clone())
+        fn capture_geometry(&mut self) -> Result<CaptureGeometry, Box<dyn Error>> {
+            Ok(self.geometry.clone())
         }
 
-        fn frame(&mut self, _monitor: &Monitor) -> Result<Screenshot, Box<dyn Error>> {
-            self.screenshots
-                .pop_front()
-                .ok_or_else(|| "no screenshot queued".into())
+        fn capture_frame(&mut self) -> Result<CapturedFrame, Box<dyn Error>> {
+            let screenshot = self.screenshots.pop_front().ok_or("no screenshot queued")?;
+            Ok(CapturedFrame {
+                sequence: self.screenshots.len() as u64,
+                screenshot,
+                geometry: self.geometry.clone(),
+            })
         }
     }
 
@@ -266,8 +246,8 @@ mod tests {
         fn log_error(&mut self, _error: &dyn Error) {}
     }
 
-    fn monitor() -> Monitor {
-        Monitor {
+    fn geometry() -> CaptureGeometry {
+        CaptureGeometry {
             top: 20,
             left: 10,
             width: 1,
@@ -285,11 +265,11 @@ mod tests {
 
     fn manager(screenshots: Vec<Screenshot>) -> ScreenManager<FakeFrameProvider> {
         let backend = FakeFrameProvider {
-            monitors: vec![monitor()],
+            geometry: geometry(),
             screenshots: screenshots.into(),
         };
         let mut manager = ScreenManager::new(backend);
-        manager.monitor = Some(monitor());
+        manager.capture_geometry = Some(geometry());
         manager
     }
 
@@ -402,33 +382,13 @@ mod tests {
     }
 
     #[test]
-    fn set_scan_screen_uses_mss_style_monitor_indices() {
+    fn refreshes_the_selected_source_geometry() {
         let mut manager = manager(Vec::new());
-        manager.monitor = None;
+        manager.capture_geometry = None;
 
-        manager.set_scan_screen(0).unwrap();
+        manager.refresh_capture_geometry().unwrap();
 
-        assert_eq!(manager.monitor, Some(monitor()));
-        assert_eq!(manager.get_scan_geometry(), (10, 20, 1, 1));
-    }
-
-    #[test]
-    fn invalid_screen_index_keeps_the_previous_monitor() {
-        let mut manager = manager(Vec::new());
-        let previous_monitor = manager.monitor.clone();
-
-        manager.set_scan_screen(10).unwrap();
-
-        assert_eq!(manager.monitor, previous_monitor);
-    }
-
-    #[test]
-    fn cancelled_region_selection_keeps_the_previous_monitor() {
-        let mut manager = manager(Vec::new());
-        let previous_monitor = manager.monitor.clone();
-
-        assert!(!manager.set_scan_region(None));
-
-        assert_eq!(manager.monitor, previous_monitor);
+        assert_eq!(manager.capture_geometry, Some(geometry()));
+        assert_eq!(manager.get_capture_geometry(), (10, 20, 1, 1));
     }
 }

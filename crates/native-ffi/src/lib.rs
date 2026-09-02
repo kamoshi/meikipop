@@ -131,7 +131,6 @@ pub unsafe extern "C" fn meikipop_pipeline_start(
         dictionary_path,
         // The macOS provider does not use a screencast restoration token.
         screencast_token_path: PathBuf::new(),
-        monitor_index: 1,
         max_dict_entries: MAX_DICT_ENTRIES,
         max_lookup_length: MAX_LOOKUP_LENGTH,
         show_kanji: true,

@@ -46,6 +46,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // once the user has selected a screen.
                 NSApplication.shared.setActivationPolicy(.accessory)
             case let .show(entries, kanji):
+                guard !popup.isPointerInside else {
+                    pipeline.setPopupVisible(true)
+                    continue
+                }
                 popup.show(entries: entries, kanji: kanji)
                 pipeline.setPopupVisible(true)
             case .hide:

@@ -3,4 +3,4 @@ pub mod interface;
 pub mod macos;
 pub mod screenmanager;
 #[cfg(target_os = "linux")]
-pub mod wayland_mss_shim;
+pub mod wayland;

@@ -7,7 +7,7 @@ use std::time::Duration;
 use fontdb::{Database, Family, Query};
 use meikipop_native::dictionary::lookup::{DictionaryEntry, KanjiEntry};
 use meikipop_native::pipeline::{Pipeline, PipelineConfig, PipelineEvent};
-use meikipop_native::screenshot::interface::Monitor;
+use meikipop_native::screenshot::interface::CaptureGeometry;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 mod logger;
@@ -181,7 +181,7 @@ fn process_pipeline_events(
                 kanji,
                 mouse_x,
                 mouse_y,
-                monitor,
+                capture_geometry,
             } => {
                 hide_timer.stop();
                 // A screenshot may already be queued for OCR when the popup is
@@ -234,7 +234,7 @@ fn process_pipeline_events(
                 let (x, y) = calculate_popup_position(
                     mouse_x,
                     mouse_y,
-                    &monitor,
+                    &capture_geometry,
                     logical_width,
                     logical_height,
                 );
@@ -366,13 +366,13 @@ fn format_kanji(kanji: &KanjiEntry) -> FormattedKanjiData {
 fn calculate_popup_position(
     mouse_x: i32,
     mouse_y: i32,
-    monitor: &Monitor,
+    capture_geometry: &CaptureGeometry,
     popup_width: i32,
     popup_height: i32,
 ) -> (i32, i32) {
     let offset = 16;
-    let right_boundary = monitor.left + monitor.width as i32;
-    let bottom_boundary = monitor.top + monitor.height as i32;
+    let right_boundary = capture_geometry.left + capture_geometry.width as i32;
+    let bottom_boundary = capture_geometry.top + capture_geometry.height as i32;
 
     let mut final_x = mouse_x + offset;
     let mut final_y = mouse_y + offset;
@@ -384,10 +384,10 @@ fn calculate_popup_position(
         final_y = mouse_y - popup_height - offset;
     }
 
-    let maximum_x = (right_boundary - popup_width).max(monitor.left);
-    let maximum_y = (bottom_boundary - popup_height).max(monitor.top);
-    final_x = final_x.clamp(monitor.left, maximum_x);
-    final_y = final_y.clamp(monitor.top, maximum_y);
+    let maximum_x = (right_boundary - popup_width).max(capture_geometry.left);
+    let maximum_y = (bottom_boundary - popup_height).max(capture_geometry.top);
+    final_x = final_x.clamp(capture_geometry.left, maximum_x);
+    final_y = final_y.clamp(capture_geometry.top, maximum_y);
 
     (final_x, final_y)
 }
@@ -400,7 +400,6 @@ fn pipeline_config() -> PipelineConfig {
     PipelineConfig {
         dictionary_path: dictionary_path(),
         screencast_token_path: screencast_token_path(),
-        monitor_index: 1,
         max_dict_entries: MAX_DICT_ENTRIES,
         max_lookup_length: MAX_LOOKUP_LENGTH,
         show_kanji: true,

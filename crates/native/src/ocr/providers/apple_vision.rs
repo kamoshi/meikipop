@@ -1,8 +1,6 @@
 use std::error::Error;
 use std::time::Instant;
 
-use core_graphics::event::CGEvent;
-use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use image::ExtendedColorType;
 use image::codecs::bmp::BmpEncoder;
 use objc2::AnyThread;
@@ -13,9 +11,22 @@ use objc2_vision::{
     VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel,
 };
 
-use crate::ocr::interface::{BoundingBox, Mat, OcrProvider, Paragraph, Word};
+use crate::ocr::interface::{BoundingBox, Mat, OcrContext, OcrProvider, Paragraph, Word};
 
 pub struct AppleVisionOcrProvider;
+
+fn region_around_focus(context: OcrContext) -> (f64, f64, f64, f64) {
+    let Some(focus) = context.focus_point else {
+        return (0.0, 0.0, 1.0, 1.0);
+    };
+
+    let roi_w = 0.35;
+    let roi_h = 0.30;
+    let roi_x = (focus.x.clamp(0.0, 1.0) - roi_w / 2.0).clamp(0.0, 1.0 - roi_w);
+    // Vision uses a bottom-left origin while pipeline coordinates use top-left.
+    let roi_y_bl = (1.0 - focus.y.clamp(0.0, 1.0) - roi_h / 2.0).clamp(0.0, 1.0 - roi_h);
+    (roi_x, roi_y_bl, roi_w, roi_h)
+}
 
 fn encode_bmp(image: &Mat) -> image::ImageResult<Vec<u8>> {
     let mut buf = Vec::new();
@@ -35,19 +46,12 @@ impl AppleVisionOcrProvider {
     }
 }
 
-fn get_mouse_pointer_location() -> Option<(f64, f64)> {
-    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
-    let event = CGEvent::new(source).ok()?;
-    let point = event.location();
-    Some((point.x, point.y))
-}
-
 impl OcrProvider for AppleVisionOcrProvider {
     fn name(&self) -> &'static str {
         "apple_vision (macOS)"
     }
 
-    fn scan(&mut self, image: &Mat) -> Result<Vec<Paragraph>, Box<dyn Error>> {
+    fn scan(&mut self, image: &Mat, context: OcrContext) -> Result<Vec<Paragraph>, Box<dyn Error>> {
         let start_time = Instant::now();
 
         let buf = encode_bmp(image)?;
@@ -69,28 +73,14 @@ impl OcrProvider for AppleVisionOcrProvider {
         request.setRecognitionLanguages(&langs);
 
         // Dynamically restrict Vision's Region of Interest (ROI) around cursor.
-        let (roi_x, roi_y_bottom_left, roi_w, roi_h) =
-            if let Some((mx, my)) = get_mouse_pointer_location() {
-                let norm_x = (mx / 1470.0).clamp(0.0, 1.0);
-                let norm_y = (my / 956.0).clamp(0.0, 1.0);
-
-                let roi_w = 0.35;
-                let roi_h = 0.30;
-                let roi_x = (norm_x - roi_w / 2.0).clamp(0.0, 1.0 - roi_w);
-                // Vision's normalized Y coordinate has bottom-left origin (0,0 is bottom-left)
-                let roi_y_bl = (1.0 - norm_y - roi_h / 2.0).clamp(0.0, 1.0 - roi_h);
-
-                unsafe {
-                    request.setRegionOfInterest(CGRect::new(
-                        CGPoint::new(roi_x, roi_y_bl),
-                        CGSize::new(roi_w, roi_h),
-                    ));
-                }
-
-                (roi_x, roi_y_bl, roi_w, roi_h)
-            } else {
-                (0.0, 0.0, 1.0, 1.0)
-            };
+        let (roi_x, roi_y_bottom_left, roi_w, roi_h) = region_around_focus(context);
+        // SAFETY: The helper clamps the rectangle to finite unit image coordinates.
+        unsafe {
+            request.setRegionOfInterest(CGRect::new(
+                CGPoint::new(roi_x, roi_y_bottom_left),
+                CGSize::new(roi_w, roi_h),
+            ));
+        }
 
         let request_base: Retained<VNRequest> =
             Retained::into_super(Retained::into_super(request.clone()));
@@ -108,11 +98,11 @@ impl OcrProvider for AppleVisionOcrProvider {
                     let text = top_candidate.string().to_string();
                     let bbox_cg = unsafe { obs.boundingBox() };
 
-                    // Re-project ROI-relative bounding box to global screen coordinates (0.0..1.0)
-                    let local_w = bbox_cg.size.width as f64;
-                    let local_h = bbox_cg.size.height as f64;
-                    let local_x = bbox_cg.origin.x as f64;
-                    let local_y_bl = bbox_cg.origin.y as f64;
+                    // Re-project ROI-relative coordinates to the full captured image.
+                    let local_w = bbox_cg.size.width;
+                    let local_h = bbox_cg.size.height;
+                    let local_x = bbox_cg.origin.x;
+                    let local_y_bl = bbox_cg.origin.y;
 
                     let global_w = local_w * roi_w;
                     let global_h = local_h * roi_h;
@@ -164,5 +154,18 @@ mod tests {
                 .into_rgb8();
 
         assert_eq!(decoded.get_pixel(0, 0).0, [10, 20, 30]);
+    }
+
+    #[test]
+    fn region_of_interest_uses_pipeline_relative_focus() {
+        let context = OcrContext {
+            focus_point: Some(crate::ocr::interface::NormalizedPoint { x: 0.5, y: 0.25 }),
+        };
+
+        assert_eq!(region_around_focus(context), (0.325, 0.6, 0.35, 0.3));
+        assert_eq!(
+            region_around_focus(OcrContext::default()),
+            (0.0, 0.0, 1.0, 1.0)
+        );
     }
 }

@@ -3,7 +3,7 @@
 use std::error::Error;
 
 use crate::ocr::hit_scan;
-use crate::ocr::interface::{Mat, OcrProvider, Paragraph};
+use crate::ocr::interface::{Mat, OcrContext, OcrProvider, Paragraph};
 use crate::ocr::providers::meikiocr::provider::MeikiOcrProvider;
 use crate::screenshot::interface::RgbImage;
 
@@ -31,20 +31,24 @@ impl OcrProcessor {
         Ok(processor)
     }
 
-    pub fn scan(&mut self, image: &Mat) -> Result<usize, Box<dyn Error>> {
+    pub fn scan(&mut self, image: &Mat, context: OcrContext) -> Result<usize, Box<dyn Error>> {
         let Some(ocr_backend) = self.ocr_backend.as_mut() else {
             return Err("OCR provider was not initialized".into());
         };
 
-        let ocr_result = ocr_backend.scan(image)?;
+        let ocr_result = ocr_backend.scan(image, context)?;
         let paragraph_count = ocr_result.len();
         // todo keep last ocr result?
         self.last_ocr_result = Some(ocr_result);
         Ok(paragraph_count)
     }
 
-    pub fn scan_rgb(&mut self, image: &RgbImage) -> Result<usize, Box<dyn Error>> {
-        self.scan(image)
+    pub fn scan_rgb(
+        &mut self,
+        image: &RgbImage,
+        context: OcrContext,
+    ) -> Result<usize, Box<dyn Error>> {
+        self.scan(image, context)
     }
 
     pub fn hit_scan(&self, norm_x: f64, norm_y: f64) -> Option<String> {
@@ -175,7 +179,7 @@ mod tests {
         };
         let image = Mat::new(800, 600);
 
-        assert_eq!(processor.scan(&image).unwrap(), 2);
+        assert_eq!(processor.scan(&image, OcrContext::default()).unwrap(), 2);
         assert_eq!(processor.last_ocr_result.as_ref().unwrap().len(), 2);
         assert!(processor.hit_scan(0.15, 0.28).is_some());
     }
