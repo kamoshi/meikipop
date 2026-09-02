@@ -3,14 +3,32 @@
 use std::ffi::{CStr, CString, c_char};
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::Once;
 use std::time::Duration;
 
 use meikipop_native::dictionary::lookup::{DictionaryEntry, KanjiEntry, Sense};
 use meikipop_native::pipeline::{Pipeline, PipelineConfig, PipelineEvent};
+use meikipop_native::screenshot::interface::CaptureGeometry;
 use serde::Serialize;
 
 const MAX_DICT_ENTRIES: usize = 10;
 const MAX_LOOKUP_LENGTH: usize = 25;
+static LOGGING_INIT: Once = Once::new();
+
+/// Installs a stderr logger for Rust code hosted by the Swift application.
+///
+/// Calling this function more than once is safe. `RUST_LOG` controls the
+/// filter; when it is absent, MeikiPop logs at `info` level.
+#[unsafe(no_mangle)]
+pub extern "C" fn meikipop_logging_init() {
+    LOGGING_INIT.call_once(|| {
+        let environment = env_logger::Env::default()
+            .filter_or("RUST_LOG", "meikipop_native=info,meikipop_native_ffi=info");
+        let _ = env_logger::Builder::from_env(environment)
+            .format_timestamp_millis()
+            .try_init();
+    });
+}
 
 /// Opaque to C and Swift. Rust remains the sole owner of the pipeline.
 pub struct MeikiPopPipeline {
@@ -168,19 +186,31 @@ pub unsafe extern "C" fn meikipop_pipeline_poll(pipeline: *mut MeikiPopPipeline)
         .map_or(ptr::null_mut(), CString::into_raw)
 }
 
-/// Lets the frontend tell the capture loop whether its popup is visible.
+/// Reports the popup's global desktop bounds to the native pipeline.
+///
+/// Passing `visible = false` clears the exclusion region; the remaining
+/// arguments are ignored in that case.
 ///
 /// # Safety
 /// `pipeline` must be null or a live pointer returned by
 /// `meikipop_pipeline_start`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn meikipop_pipeline_set_popup_visible(
+pub unsafe extern "C" fn meikipop_pipeline_set_popup_bounds(
     pipeline: *mut MeikiPopPipeline,
     visible: bool,
+    left: i32,
+    top: i32,
+    width: u32,
+    height: u32,
 ) {
-    // SAFETY: Guaranteed by the function contract.
     if let Some(pipeline) = unsafe { pipeline.as_ref() } {
-        pipeline.pipeline.set_popup_visible(visible);
+        let bounds = visible.then_some(CaptureGeometry {
+            left,
+            top,
+            width: width as usize,
+            height: height as usize,
+        });
+        pipeline.pipeline.set_popup_bounds(bounds);
     }
 }
 

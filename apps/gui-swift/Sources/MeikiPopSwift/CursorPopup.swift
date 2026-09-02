@@ -173,6 +173,17 @@ final class CursorPopupController {
         panel.isVisible && NSMouseInRect(NSEvent.mouseLocation, panel.frame, false)
     }
 
+    var captureBounds: PopupCaptureBounds? {
+        guard panel.isVisible, let primaryScreen = NSScreen.screens.first else { return nil }
+        let frame = panel.frame
+        return PopupCaptureBounds(
+            left: Int32(clamping: Int(frame.minX.rounded())),
+            top: Int32(clamping: Int((primaryScreen.frame.maxY - frame.maxY).rounded())),
+            width: UInt32(clamping: Int(frame.width.rounded())),
+            height: UInt32(clamping: Int(frame.height.rounded()))
+        )
+    }
+
     init() {
         let model = CursorPopupModel()
         let panel = NSPanel(

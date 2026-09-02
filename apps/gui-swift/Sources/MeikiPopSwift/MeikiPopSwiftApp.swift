@@ -47,11 +47,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApplication.shared.setActivationPolicy(.accessory)
             case let .show(entries, kanji):
                 guard !popup.isPointerInside else {
-                    pipeline.setPopupVisible(true)
                     continue
                 }
                 popup.show(entries: entries, kanji: kanji)
-                pipeline.setPopupVisible(true)
             case .hide:
                 popup.requestHide()
             case let .error(message):
@@ -60,11 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Keep native capture paused while the pointer is interacting with the
-        // popup. This also lets a later pointer move produce a fresh hide event.
-        if popup.isPointerInside {
-            pipeline.setPopupVisible(true)
-        }
+        // Keep capture and hit-testing synchronized with the panel's actual
+        // lifetime, including the delayed hide period.
+        pipeline.setPopupBounds(popup.captureBounds)
     }
 
     private static var dictionaryPath: String {

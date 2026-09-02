@@ -28,6 +28,13 @@ enum RustPipelineEvent {
     case error(String)
 }
 
+struct PopupCaptureBounds {
+    let left: Int32
+    let top: Int32
+    let width: UInt32
+    let height: UInt32
+}
+
 private struct WireEvent: Decodable {
     let kind: String
     let entries: [LookupEntry]?
@@ -54,6 +61,8 @@ final class RustPipeline {
     private var handle: OpaquePointer?
 
     init(dictionaryPath: String) throws {
+        meikipop_logging_init()
+
         var errorPointer: UnsafeMutablePointer<CChar>?
         handle = dictionaryPath.withCString { path in
             meikipop_pipeline_start(path, &errorPointer)
@@ -105,8 +114,15 @@ final class RustPipeline {
         }
     }
 
-    func setPopupVisible(_ visible: Bool) {
+    func setPopupBounds(_ bounds: PopupCaptureBounds?) {
         guard let handle else { return }
-        meikipop_pipeline_set_popup_visible(handle, visible)
+        meikipop_pipeline_set_popup_bounds(
+            handle,
+            bounds != nil,
+            bounds?.left ?? 0,
+            bounds?.top ?? 0,
+            bounds?.width ?? 0,
+            bounds?.height ?? 0
+        )
     }
 }

@@ -4,12 +4,13 @@ use std::time::{Duration, Instant};
 use objc2_core_graphics::{CGEvent, CGEventSource, CGEventSourceStateID};
 
 use crate::input::interface::{PointerProvider, PointerSnapshot};
-use crate::platform::macos::window_server::{WindowListSnapshot, query_window_geometry};
+use crate::platform::macos::SharedCaptureSource;
+use crate::platform::macos::window_server::WindowListSnapshot;
 
 const WINDOW_LIST_CACHE_DURATION: Duration = Duration::from_millis(50);
 
 pub struct CoreGraphicsPointerProvider {
-    window_id: Option<u32>,
+    source: Option<SharedCaptureSource>,
     cached_window_list: Option<WindowListSnapshot>,
     last_window_list_check: Option<Instant>,
 }
@@ -17,15 +18,15 @@ pub struct CoreGraphicsPointerProvider {
 impl CoreGraphicsPointerProvider {
     pub fn new() -> Self {
         Self {
-            window_id: None,
+            source: None,
             cached_window_list: None,
             last_window_list_check: None,
         }
     }
 
-    pub fn new_with_window_id(window_id: Option<u32>) -> Self {
+    pub(crate) fn new_with_source(source: SharedCaptureSource) -> Self {
         Self {
-            window_id,
+            source: Some(source),
             cached_window_list: None,
             last_window_list_check: None,
         }
@@ -49,9 +50,9 @@ impl CoreGraphicsPointerProvider {
         }
 
         self.last_window_list_check = Some(now);
-        if let Some(snapshot) = WindowListSnapshot::on_screen() {
-            self.cached_window_list = Some(snapshot);
-        }
+        // Occlusion is a safety check: never retain stale z-order information
+        // when WindowServer cannot provide a fresh observation.
+        self.cached_window_list = WindowListSnapshot::on_screen();
     }
 }
 
@@ -64,20 +65,38 @@ impl Default for CoreGraphicsPointerProvider {
 impl PointerProvider for CoreGraphicsPointerProvider {
     fn snapshot(&mut self) -> Result<PointerSnapshot, Box<dyn Error>> {
         let position = Self::pointer_position()?;
-        let Some(window_id) = self.window_id else {
+        let Some(source) = self.source.clone() else {
             return Ok(PointerSnapshot {
                 position,
                 capture_geometry: None,
+                source_generation: 0,
+                target_available: true,
+            });
+        };
+
+        let selected = source
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        if !selected.available {
+            return Ok(PointerSnapshot {
+                position,
+                capture_geometry: None,
+                source_generation: selected.generation,
+                target_available: false,
+            });
+        }
+
+        let Some(window_id) = selected.window_id else {
+            return Ok(PointerSnapshot {
+                position,
+                capture_geometry: selected.geometry,
+                source_generation: selected.generation,
                 target_available: true,
             });
         };
 
         self.refresh_window_list_if_needed();
-        let capture_geometry = self
-            .cached_window_list
-            .as_ref()
-            .and_then(|snapshot| snapshot.geometry(window_id))
-            .or_else(|| query_window_geometry(window_id));
         let target_available = self
             .cached_window_list
             .as_ref()
@@ -85,7 +104,11 @@ impl PointerProvider for CoreGraphicsPointerProvider {
 
         Ok(PointerSnapshot {
             position,
-            capture_geometry,
+            // The captured frame owns the coordinate system used by OCR.
+            // WindowServer bounds can include different border/shadow extents,
+            // so they are used only for z-order and occlusion checks here.
+            capture_geometry: selected.geometry,
+            source_generation: selected.generation,
             target_available,
         })
     }

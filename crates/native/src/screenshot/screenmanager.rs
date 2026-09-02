@@ -141,11 +141,14 @@ impl<B: FrameProvider> ScreenManager<B> {
     }
 
     pub fn take_screenshot(&mut self) -> Result<Screenshot, Box<dyn Error>> {
-        Ok(self.frame_provider.capture_frame()?.screenshot)
+        self.frame_provider
+            .capture_frame()?
+            .map(|frame| frame.screenshot)
+            .ok_or_else(|| "No capture source is currently shared".into())
     }
 
     pub fn refresh_capture_geometry(&mut self) -> Result<(), Box<dyn Error>> {
-        self.capture_geometry = Some(self.frame_provider.capture_geometry()?);
+        self.capture_geometry = self.frame_provider.capture_geometry()?;
         Ok(())
     }
 
@@ -187,17 +190,18 @@ mod tests {
     }
 
     impl FrameProvider for FakeFrameProvider {
-        fn capture_geometry(&mut self) -> Result<CaptureGeometry, Box<dyn Error>> {
-            Ok(self.geometry.clone())
+        fn capture_geometry(&mut self) -> Result<Option<CaptureGeometry>, Box<dyn Error>> {
+            Ok(Some(self.geometry.clone()))
         }
 
-        fn capture_frame(&mut self) -> Result<CapturedFrame, Box<dyn Error>> {
+        fn capture_frame(&mut self) -> Result<Option<CapturedFrame>, Box<dyn Error>> {
             let screenshot = self.screenshots.pop_front().ok_or("no screenshot queued")?;
-            Ok(CapturedFrame {
+            Ok(Some(CapturedFrame {
+                source_generation: 1,
                 sequence: self.screenshots.len() as u64,
                 screenshot,
                 geometry: self.geometry.clone(),
-            })
+            }))
         }
     }
 
@@ -257,7 +261,7 @@ mod tests {
 
     fn screenshot(pixel: [u8; 4]) -> Screenshot {
         Screenshot {
-            raw: pixel.to_vec(),
+            raw: pixel.into(),
             width: 1,
             height: 1,
         }

@@ -13,9 +13,12 @@ struct WindowSummary {
     alpha: f64,
 }
 
-/// One ordered WindowServer observation. The first containing window is the
-/// frontmost window at a point, so cursor movement can be evaluated without
-/// repeatedly asking WindowServer for the same list.
+/// One ordered WindowServer observation.
+///
+/// WindowServer exposes rectangular bounds and whole-window alpha, not a
+/// per-pixel visibility region. Occlusion is therefore intentionally
+/// conservative: any nontransparent window whose bounds contain the pointer
+/// blocks a selected window below it.
 #[derive(Clone, Debug)]
 pub(crate) struct WindowListSnapshot {
     windows: Vec<WindowSummary>,
@@ -31,13 +34,6 @@ impl WindowListSnapshot {
             .filter_map(window_summary)
             .collect();
         Some(Self { windows })
-    }
-
-    pub(crate) fn geometry(&self, window_id: u32) -> Option<CaptureGeometry> {
-        self.windows
-            .iter()
-            .find(|window| window.id == window_id)
-            .map(|window| window.bounds.clone())
     }
 
     pub(crate) fn target_is_frontmost_at_point(&self, window_id: u32, point: (i32, i32)) -> bool {

@@ -7,6 +7,7 @@ use crate::screenshot::interface::CaptureGeometry;
 pub struct PointerSnapshot {
     pub position: (i32, i32),
     pub capture_geometry: Option<CaptureGeometry>,
+    pub source_generation: u64,
     pub target_available: bool,
 }
 

@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::sync::Arc;
 
 pub type RgbImage = image::RgbImage;
 
@@ -27,7 +28,9 @@ impl CaptureGeometry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Screenshot {
-    pub raw: Vec<u8>,
+    /// Immutable BGRA pixels. Sharing keeps cached-frame delivery cheap when a
+    /// platform reports idle content after only the pointer has moved.
+    pub raw: Arc<[u8]>,
     pub width: usize,
     pub height: usize,
 }
@@ -35,6 +38,8 @@ pub struct Screenshot {
 /// A frame and the logical desktop geometry it represented when captured.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapturedFrame {
+    /// Changes whenever the selected source changes or is detached.
+    pub source_generation: u64,
     pub sequence: u64,
     pub screenshot: Screenshot,
     pub geometry: CaptureGeometry,
@@ -73,10 +78,10 @@ impl Screenshot {
 }
 
 pub trait FrameProvider: Send {
-    /// Returns the current logical geometry of the system-selected source.
-    fn capture_geometry(&mut self) -> Result<CaptureGeometry, Box<dyn Error>>;
+    /// Returns the selected source geometry, or `None` while capture is idle.
+    fn capture_geometry(&mut self) -> Result<Option<CaptureGeometry>, Box<dyn Error>>;
 
-    /// Returns a frame together with the geometry that produced it.
+    /// Returns a frame, or `None` while no source is currently shared.
     /// Implementations must not pair a cached frame with newer geometry.
-    fn capture_frame(&mut self) -> Result<CapturedFrame, Box<dyn Error>>;
+    fn capture_frame(&mut self) -> Result<Option<CapturedFrame>, Box<dyn Error>>;
 }

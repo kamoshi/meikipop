@@ -24,7 +24,7 @@ use crate::input::interface::{PointerProvider, PointerSnapshot};
 
 #[derive(Clone)]
 struct Frame {
-    data: Arc<Vec<u8>>,
+    data: Arc<[u8]>,
     width: usize,
     height: usize,
     left: i32,
@@ -422,7 +422,7 @@ fn run_capture(
             );
             match result {
                 Ok(data) => callback_shared.set_frame(Frame {
-                    data: Arc::new(data),
+                    data: data.into(),
                     width: pixel_size.width as usize,
                     height: pixel_size.height as usize,
                     left: stream_position.0,
@@ -581,6 +581,7 @@ impl PointerProvider for WaylandPointerProvider {
                 width: frame.logical_width,
                 height: frame.logical_height,
             }),
+            source_generation: 1,
             target_available: true,
         })
     }
@@ -612,6 +613,7 @@ impl WaylandFrameProvider {
     fn latest_captured_frame(&self) -> Result<CapturedFrame, Box<dyn Error>> {
         let (sequence, frame) = self.screencast.request_frame()?;
         Ok(CapturedFrame {
+            source_generation: 1,
             sequence,
             geometry: CaptureGeometry {
                 top: frame.top,
@@ -620,7 +622,7 @@ impl WaylandFrameProvider {
                 height: frame.logical_height,
             },
             screenshot: Screenshot {
-                raw: frame.data.as_ref().clone(),
+                raw: Arc::clone(&frame.data),
                 width: frame.width,
                 height: frame.height,
             },
@@ -629,12 +631,12 @@ impl WaylandFrameProvider {
 }
 
 impl FrameProvider for WaylandFrameProvider {
-    fn capture_geometry(&mut self) -> Result<CaptureGeometry, Box<dyn Error>> {
-        self.selected_geometry()
+    fn capture_geometry(&mut self) -> Result<Option<CaptureGeometry>, Box<dyn Error>> {
+        self.selected_geometry().map(Some)
     }
 
-    fn capture_frame(&mut self) -> Result<CapturedFrame, Box<dyn Error>> {
-        self.latest_captured_frame()
+    fn capture_frame(&mut self) -> Result<Option<CapturedFrame>, Box<dyn Error>> {
+        self.latest_captured_frame().map(Some)
     }
 }
 

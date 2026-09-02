@@ -48,6 +48,15 @@ impl PopupBounds {
             && y >= self.y
             && y < self.y.saturating_add(self.height)
     }
+
+    fn capture_geometry(self) -> CaptureGeometry {
+        CaptureGeometry {
+            left: self.x,
+            top: self.y,
+            width: self.width.max(0) as usize,
+            height: self.height.max(0) as usize,
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -193,7 +202,6 @@ fn process_pipeline_events(
                     .borrow()
                     .is_some_and(|bounds| bounds.contains(mouse_x, mouse_y))
                 {
-                    pipeline.borrow().set_popup_visible(true);
                     tracing::debug!("Ignoring lookup result from inside the popup");
                     continue;
                 }
@@ -224,7 +232,6 @@ fn process_pipeline_events(
                 popup.set_has_error(false);
                 popup.set_scroll_y(0.0);
                 let _ = popup.show();
-                pipeline.borrow().set_popup_visible(true);
 
                 let scale_factor = popup.window().scale_factor();
                 let physical_size = popup.window().size();
@@ -255,14 +262,23 @@ fn process_pipeline_events(
                 popup
                     .window()
                     .set_position(slint::LogicalPosition::new(x as f32, y as f32));
-                *popup_bounds.borrow_mut() = Some(PopupBounds {
+                let bounds = PopupBounds {
                     x,
                     y,
                     width: logical_width,
                     height: logical_height,
-                });
+                };
+                *popup_bounds.borrow_mut() = Some(bounds);
+                pipeline
+                    .borrow()
+                    .set_popup_bounds(Some(bounds.capture_geometry()));
             }
             PipelineEvent::HidePopup { mouse_x, mouse_y } => {
+                if let Some(bounds) = *popup_bounds.borrow() {
+                    pipeline
+                        .borrow()
+                        .set_popup_bounds(Some(bounds.capture_geometry()));
+                }
                 let popup_weak = popup.as_weak();
                 let pipeline = Rc::clone(pipeline);
                 let popup_bounds = Rc::clone(popup_bounds);
@@ -273,15 +289,13 @@ fn process_pipeline_events(
                         let Some(popup) = popup_weak.upgrade() else {
                             return;
                         };
-                        if popup_bounds
+                        if !popup_bounds
                             .borrow()
                             .is_some_and(|bounds| bounds.contains(mouse_x, mouse_y))
                         {
-                            pipeline.borrow().set_popup_visible(true);
-                        } else {
                             let _ = popup.hide();
                             *popup_bounds.borrow_mut() = None;
-                            pipeline.borrow().set_popup_visible(false);
+                            pipeline.borrow().set_popup_bounds(None);
                         }
                     },
                 );
@@ -295,6 +309,18 @@ fn process_pipeline_events(
                 popup
                     .window()
                     .set_position(slint::LogicalPosition::new(80.0, 80.0));
+                let scale_factor = popup.window().scale_factor();
+                let size = popup.window().size();
+                let bounds = PopupBounds {
+                    x: 80,
+                    y: 80,
+                    width: (size.width as f32 / scale_factor).round() as i32,
+                    height: (size.height as f32 / scale_factor).round() as i32,
+                };
+                *popup_bounds.borrow_mut() = Some(bounds);
+                pipeline
+                    .borrow()
+                    .set_popup_bounds(Some(bounds.capture_geometry()));
             }
         }
     }
