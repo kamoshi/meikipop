@@ -10,10 +10,16 @@ void meikipop_logging_init(void);
 
 MeikiPopPipeline *meikipop_pipeline_start(
     const char *dictionary_path,
+    const char *config_json,
     char **error_out
 );
 
 char *meikipop_pipeline_poll(MeikiPopPipeline *pipeline);
+
+bool meikipop_pipeline_update_config(
+    MeikiPopPipeline *pipeline,
+    const char *config_json
+);
 
 void meikipop_pipeline_set_popup_bounds(
     MeikiPopPipeline *pipeline,

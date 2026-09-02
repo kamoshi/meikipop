@@ -7,8 +7,17 @@ private final class CursorPopupModel: ObservableObject {
     @Published var errorMessage: String?
 }
 
+private struct PopupContentHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 private struct CursorPopupView: View {
     @ObservedObject var model: CursorPopupModel
+    let onContentHeightChange: (CGFloat) -> Void
 
     var body: some View {
         ScrollView {
@@ -31,7 +40,16 @@ private struct CursorPopupView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(18)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: PopupContentHeightPreferenceKey.self,
+                        value: geometry.size.height
+                    )
+                }
+            }
         }
+        .onPreferenceChange(PopupContentHeightPreferenceKey.self, perform: onContentHeightChange)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
@@ -164,7 +182,9 @@ private struct KanjiView: View {
 
 @MainActor
 final class CursorPopupController {
-    private let popupSize = NSSize(width: 440, height: 360)
+    private let popupWidth: CGFloat = 440
+    private let minimumPopupHeight: CGFloat = 96
+    private let maximumPopupHeight: CGFloat = 360
     private let model: CursorPopupModel
     private let panel: NSPanel
     private var pendingHide: DispatchWorkItem?
@@ -187,13 +207,25 @@ final class CursorPopupController {
     init() {
         let model = CursorPopupModel()
         let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: popupSize),
+            contentRect: NSRect(
+                origin: .zero,
+                size: NSSize(width: popupWidth, height: maximumPopupHeight)
+            ),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
 
-        panel.contentView = NSHostingView(rootView: CursorPopupView(model: model))
+        self.model = model
+        self.panel = panel
+
+        panel.contentView = NSHostingView(
+            rootView: CursorPopupView(model: model) { [weak self] contentHeight in
+                Task { @MainActor in
+                    self?.resizePanel(toFit: contentHeight)
+                }
+            }
+        )
         panel.level = .popUpMenu
         panel.isFloatingPanel = true
         panel.isOpaque = false
@@ -203,9 +235,6 @@ final class CursorPopupController {
         panel.ignoresMouseEvents = false
         panel.becomesKeyOnlyIfNeeded = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-
-        self.model = model
-        self.panel = panel
     }
 
     func show(entries: [LookupEntry], kanji: LookupKanji?) {
@@ -244,12 +273,30 @@ final class CursorPopupController {
 
     private func showPanel() {
         if !isPointerInside {
-            panel.setFrameOrigin(originNextToCursor())
+            panel.setFrameOrigin(originNextToCursor(for: panel.frame.size))
         }
         panel.orderFrontRegardless()
     }
 
-    private func originNextToCursor() -> NSPoint {
+    private func resizePanel(toFit contentHeight: CGFloat) {
+        guard contentHeight.isFinite, contentHeight > 0 else { return }
+
+        let height = min(max(ceil(contentHeight), minimumPopupHeight), maximumPopupHeight)
+        guard abs(panel.frame.height - height) >= 1 else { return }
+
+        let size = NSSize(width: popupWidth, height: height)
+        let origin: NSPoint
+        if panel.isVisible && !isPointerInside {
+            origin = originNextToCursor(for: size)
+        } else {
+            // Preserve the top edge while resizing an already displayed panel,
+            // so it does not jump away from the content the user is reading.
+            origin = NSPoint(x: panel.frame.minX, y: panel.frame.maxY - height)
+        }
+        panel.setFrame(NSRect(origin: origin, size: size), display: panel.isVisible)
+    }
+
+    private func originNextToCursor(for popupSize: NSSize) -> NSPoint {
         let cursor = NSEvent.mouseLocation
         let screen = NSScreen.screens.first {
             NSMouseInRect(cursor, $0.frame, false)

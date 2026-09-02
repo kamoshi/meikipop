@@ -7,36 +7,60 @@ use crate::ocr::interface::{Mat, OcrContext, OcrProvider, Paragraph};
 use crate::ocr::providers::meikiocr::provider::MeikiOcrProvider;
 use crate::screenshot::interface::RgbImage;
 
-const DEFAULT_PROVIDER_NAME: &str = "meikiocr (local)";
+pub const DEFAULT_PROVIDER_ID: &str = "meikiocr";
+#[cfg(target_os = "macos")]
+const APPLE_VISION_PROVIDER_ID: &str = "apple_vision";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OcrProviderInfo {
+    pub id: &'static str,
+    pub name: &'static str,
+}
+
+const MEIKIOCR_PROVIDER: OcrProviderInfo = OcrProviderInfo {
+    id: DEFAULT_PROVIDER_ID,
+    name: "meikiocr (local)",
+};
+
+#[cfg(target_os = "macos")]
+const APPLE_VISION_PROVIDER: OcrProviderInfo = OcrProviderInfo {
+    id: APPLE_VISION_PROVIDER_ID,
+    name: "Apple Vision (macOS)",
+};
 
 pub struct OcrProcessor {
-    pub ocr_backend: Option<Box<dyn OcrProvider>>,
-    pub available_providers: Vec<&'static str>,
-    pub last_ocr_result: Option<Vec<Paragraph>>,
+    ocr_backend: Box<dyn OcrProvider>,
+    active_provider_id: &'static str,
+    last_ocr_result: Option<Vec<Paragraph>>,
 }
 
 impl OcrProcessor {
     pub fn new() -> Result<Self, Box<dyn Error>> {
-        let available_providers = Self::_discover_providers();
-        if available_providers.is_empty() {
-            return Err("No OCR providers found! The application cannot continue.".into());
-        }
+        let configured = std::env::var("MEIKIPOP_OCR_PROVIDER").ok();
+        Self::new_with_provider(configured.as_deref())
+    }
 
-        let mut processor = Self {
-            ocr_backend: None,
-            available_providers,
-            last_ocr_result: None,
+    pub fn new_with_provider(provider_id: Option<&str>) -> Result<Self, Box<dyn Error>> {
+        let requested = provider_id.unwrap_or(DEFAULT_PROVIDER_ID);
+        let selected = if Self::provider_info(requested).is_some() {
+            requested
+        } else {
+            log::warn!(
+                "Configured OCR provider '{requested}' is unavailable; using '{DEFAULT_PROVIDER_ID}'"
+            );
+            DEFAULT_PROVIDER_ID
         };
-        processor._load_provider_from_config()?;
-        Ok(processor)
+        let (active_provider_id, ocr_backend) = Self::create_with_fallback(selected)?;
+        log::info!("Initialized OCR with '{}' provider", ocr_backend.name());
+        Ok(Self {
+            ocr_backend,
+            active_provider_id,
+            last_ocr_result: None,
+        })
     }
 
     pub fn scan(&mut self, image: &Mat, context: OcrContext) -> Result<usize, Box<dyn Error>> {
-        let Some(ocr_backend) = self.ocr_backend.as_mut() else {
-            return Err("OCR provider was not initialized".into());
-        };
-
-        let ocr_result = ocr_backend.scan(image, context)?;
+        let ocr_result = self.ocr_backend.scan(image, context)?;
         let paragraph_count = ocr_result.len();
         // todo keep last ocr result?
         self.last_ocr_result = Some(ocr_result);
@@ -56,125 +80,123 @@ impl OcrProcessor {
         hit_scan::hit_scan(paragraphs, norm_x, norm_y)
     }
 
-    // todo combine methods?
-    pub fn switch_provider(&mut self, provider_name: &str) -> Result<(), Box<dyn Error>> {
-        if self
-            .ocr_backend
-            .as_ref()
-            .is_some_and(|ocr_backend| provider_name == ocr_backend.name())
-        {
-            return Ok(());
-        }
-
-        if self.available_providers.contains(&provider_name) {
-            log::info!("Switching OCR provider to '{provider_name}'...");
-            let previous_backend = self.ocr_backend.take();
-            match Self::_create_provider(provider_name) {
-                Ok(provider) => {
-                    log::info!(
-                        "Successfully switched OCR provider to '{}'",
-                        provider.name()
-                    );
-                    self.ocr_backend = Some(provider);
-                    self.last_ocr_result = None;
-                    Ok(())
-                }
-                Err(error) => {
-                    log::error!("Failed to instantiate provider '{provider_name}': {error}");
-                    if let Some(previous_backend) = previous_backend {
-                        log::info!(
-                            "Reverting to previous provider '{}'.",
-                            previous_backend.name()
-                        );
-                        self.ocr_backend = Some(previous_backend);
-                    }
-                    Err(error)
-                }
-            }
-        } else {
-            Err(format!("Attempted to switch to an unknown provider: '{provider_name}'").into())
-        }
+    pub fn take_last_result(&mut self) -> Vec<Paragraph> {
+        self.last_ocr_result.take().unwrap_or_default()
     }
 
-    fn _load_provider_from_config(&mut self) -> Result<(), Box<dyn Error>> {
-        let env_provider = std::env::var("MEIKIPOP_OCR_PROVIDER").ok();
-        let configured_provider_name = env_provider.as_deref().unwrap_or(DEFAULT_PROVIDER_NAME);
-        let default_provider_name = DEFAULT_PROVIDER_NAME;
-
-        let mut provider_to_load_name = configured_provider_name;
-
-        if !self.available_providers.contains(&configured_provider_name) {
-            log::warn!(
-                "Configured OCR provider '{configured_provider_name}' not found. Falling back to default provider '{default_provider_name}'."
-            );
-            provider_to_load_name = default_provider_name;
-        }
-
-        if !self.available_providers.contains(&provider_to_load_name) {
-            let fallback_provider_name = self.available_providers[0];
-            log::warn!(
-                "Default OCR provider '{provider_to_load_name}' not found. Falling back to first available provider: '{fallback_provider_name}'."
-            );
-            provider_to_load_name = fallback_provider_name;
-        }
-
-        match Self::_create_provider(provider_to_load_name) {
-            Ok(provider) => {
-                log::info!("Initialized OCR with '{}' provider.", provider.name());
-                self.ocr_backend = Some(provider);
-                Ok(())
-            }
-            Err(error) => {
-                log::error!(
-                    "Failed to instantiate provider '{provider_to_load_name}' on startup: {error}"
-                );
-                self.switch_provider(default_provider_name)
-            }
-        }
+    pub fn active_provider_id(&self) -> &'static str {
+        self.active_provider_id
     }
 
-    fn _discover_providers() -> Vec<&'static str> {
-        let mut providers = Vec::new();
-
-        // Rust providers are registered statically instead of discovered by
-        // scanning Python packages.
-        providers.push(DEFAULT_PROVIDER_NAME);
+    pub fn available_providers() -> Vec<OcrProviderInfo> {
+        let mut providers = vec![MEIKIOCR_PROVIDER];
         #[cfg(target_os = "macos")]
-        providers.push("apple_vision (macOS)");
-
+        providers.push(APPLE_VISION_PROVIDER);
         providers
     }
 
-    fn _create_provider(provider_name: &str) -> Result<Box<dyn OcrProvider>, Box<dyn Error>> {
-        match provider_name {
-            DEFAULT_PROVIDER_NAME => Ok(Box::new(MeikiOcrProvider::new()?)),
+    /// Switches backend and returns whether a replacement actually occurred.
+    pub fn switch_provider(&mut self, provider_id: &str) -> Result<bool, Box<dyn Error>> {
+        if provider_id == self.active_provider_id {
+            return Ok(false);
+        }
+        let info = Self::provider_info(provider_id)
+            .ok_or_else(|| format!("Unknown OCR provider: '{provider_id}'"))?;
+        log::info!("Switching OCR provider to '{}'", info.name);
+        // Construct first so a failed initialization leaves the active backend
+        // untouched and immediately usable.
+        let provider = Self::create_provider(provider_id)?;
+        self.ocr_backend = provider;
+        self.active_provider_id = info.id;
+        self.last_ocr_result = None;
+        log::info!("Switched OCR provider to '{}'", info.name);
+        Ok(true)
+    }
+
+    fn provider_info(provider_id: &str) -> Option<OcrProviderInfo> {
+        Self::available_providers()
+            .into_iter()
+            .find(|provider| provider.id == provider_id)
+    }
+
+    fn create_with_fallback(
+        provider_id: &str,
+    ) -> Result<(&'static str, Box<dyn OcrProvider>), Box<dyn Error>> {
+        match Self::create_provider(provider_id) {
+            Ok(provider) => Ok((Self::provider_info(provider_id).unwrap().id, provider)),
+            Err(error) if provider_id != DEFAULT_PROVIDER_ID => {
+                log::warn!(
+                    "Failed to initialize OCR provider '{provider_id}': {error}; falling back to '{DEFAULT_PROVIDER_ID}'"
+                );
+                Ok((
+                    DEFAULT_PROVIDER_ID,
+                    Self::create_provider(DEFAULT_PROVIDER_ID)?,
+                ))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn create_provider(provider_id: &str) -> Result<Box<dyn OcrProvider>, Box<dyn Error>> {
+        match provider_id {
+            DEFAULT_PROVIDER_ID => Ok(Box::new(MeikiOcrProvider::new()?)),
             #[cfg(target_os = "macos")]
-            "apple_vision (macOS)" => Ok(Box::new(
+            APPLE_VISION_PROVIDER_ID => Ok(Box::new(
                 crate::ocr::providers::apple_vision::AppleVisionOcrProvider::new()?,
             )),
-            _ => Err(format!("Unknown OCR provider: '{provider_name}'").into()),
+            _ => Err(format!("Unknown OCR provider: '{provider_id}'").into()),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use crate::ocr::providers::dummy::provider::DummyProvider;
 
     #[test]
     fn discovers_the_native_meikiocr_provider() {
         assert!(
-            OcrProcessor::_discover_providers().contains(&DEFAULT_PROVIDER_NAME),
+            OcrProcessor::available_providers()
+                .iter()
+                .any(|provider| provider.id == DEFAULT_PROVIDER_ID),
             "the local OCR provider should be available on every platform"
         );
     }
 
     #[test]
+    fn provider_ids_are_unique_and_separate_from_display_names() {
+        let providers = OcrProcessor::available_providers();
+        let ids: HashSet<_> = providers.iter().map(|provider| provider.id).collect();
+
+        assert_eq!(ids.len(), providers.len());
+        assert!(
+            providers
+                .iter()
+                .all(|provider| provider.id != provider.name)
+        );
+    }
+
+    #[test]
+    fn an_unknown_provider_does_not_replace_the_active_backend() {
+        let mut processor = OcrProcessor {
+            ocr_backend: Box::new(DummyProvider),
+            active_provider_id: DEFAULT_PROVIDER_ID,
+            last_ocr_result: None,
+        };
+
+        assert!(processor.switch_provider("not_registered").is_err());
+        assert_eq!(processor.active_provider_id(), DEFAULT_PROVIDER_ID);
+        assert_eq!(processor.ocr_backend.name(), DummyProvider::NAME);
+    }
+
+    #[test]
     fn keeps_paragraphs_in_rust_for_later_hit_scans() {
         let mut processor = OcrProcessor {
-            ocr_backend: Some(Box::new(DummyProvider)),
-            available_providers: vec![DummyProvider::NAME],
+            ocr_backend: Box::new(DummyProvider),
+            active_provider_id: DEFAULT_PROVIDER_ID,
             last_ocr_result: None,
         };
         let image = Mat::new(800, 600);

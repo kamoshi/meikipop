@@ -15,12 +15,13 @@ struct TrayMenu: Scene {
 
             Menu("OCR Provider") {
                 Picker("OCR Provider", selection: persistedBinding(\.ocrProvider)) {
-                    ForEach(OCRProvider.allCases) { provider in
-                        Text(provider.title).tag(provider)
+                    ForEach(settings.availableOCRProviders) { provider in
+                        Text(provider.name).tag(provider.id)
                     }
                 }
                 .pickerStyle(.inline)
                 .labelsHidden()
+                .disabled(settings.availableOCRProviders.isEmpty)
             }
 
             Divider()

@@ -1,11 +1,14 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let settings = AppSettings()
     private let popup = CursorPopupController()
     private var pipeline: RustPipeline?
     private var eventTimer: Timer?
+    private var settingsObserver: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -15,12 +18,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         eventTimer?.invalidate()
         eventTimer = nil
+        settingsObserver = nil
         pipeline = nil
     }
 
     private func startPipeline() {
         do {
-            pipeline = try RustPipeline(dictionaryPath: Self.dictionaryPath)
+            let provider = settings.configuration.general.ocrProvider
+            pipeline = try RustPipeline(
+                dictionaryPath: Self.dictionaryPath,
+                ocrProvider: provider
+            )
+            observeConfiguration(initialProvider: provider)
         } catch {
             popup.showError("MeikiPop could not start\n\n\(error.localizedDescription)")
             return
@@ -45,6 +54,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // macOS can present its system picker. Return to tray-only mode
                 // once the user has selected a screen.
                 NSApplication.shared.setActivationPolicy(.accessory)
+            case let .ocrProviders(providers, activeProvider, error):
+                settings.updateOCRProviders(
+                    providers,
+                    activeProvider: activeProvider
+                )
+                if let error {
+                    NSLog("Could not change OCR provider: %@", error)
+                }
             case let .show(entries, kanji):
                 guard !popup.isPointerInside else {
                     continue
@@ -63,6 +80,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pipeline.setPopupBounds(popup.captureBounds)
     }
 
+    private func observeConfiguration(initialProvider: String) {
+        var requestedProvider = initialProvider
+        settingsObserver = settings.$configuration
+            .map(\.general.ocrProvider)
+            .removeDuplicates()
+            .sink { [weak self] provider in
+                guard provider != requestedProvider else { return }
+                requestedProvider = provider
+                self?.pipeline?.updateConfiguration(ocrProvider: provider)
+            }
+    }
+
     private static var dictionaryPath: String {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/share/meikipop/dictionary.pkl")
@@ -74,13 +103,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 struct MeikiPopSwiftApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var settings = AppSettings()
 
     var body: some Scene {
-        TrayMenu(settings: settings)
+        TrayMenu(settings: delegate.settings)
 
         Settings {
-            SettingsView(settings: settings)
+            SettingsView(settings: delegate.settings)
         }
     }
 }

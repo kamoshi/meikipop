@@ -79,10 +79,11 @@ private struct GeneralSettingsView: View {
                 }
 
                 Picker("OCR Provider", selection: $settings.configuration.general.ocrProvider) {
-                    ForEach(OCRProvider.allCases) { provider in
-                        Text(provider.title).tag(provider)
+                    ForEach(settings.availableOCRProviders) { provider in
+                        Text(provider.name).tag(provider.id)
                     }
                 }
+                .disabled(settings.availableOCRProviders.isEmpty)
 
                 Toggle(
                     "Google Lens Compression",

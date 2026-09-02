@@ -7,9 +7,10 @@ use std::sync::Once;
 use std::time::Duration;
 
 use meikipop_native::dictionary::lookup::{DictionaryEntry, KanjiEntry, Sense};
-use meikipop_native::pipeline::{Pipeline, PipelineConfig, PipelineEvent};
+use meikipop_native::ocr::ocr::OcrProviderInfo;
+use meikipop_native::pipeline::{Pipeline, PipelineConfig, PipelineEvent, PipelineRuntimeConfig};
 use meikipop_native::screenshot::interface::CaptureGeometry;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const MAX_DICT_ENTRIES: usize = 10;
 const MAX_LOOKUP_LENGTH: usize = 25;
@@ -35,10 +36,28 @@ pub struct MeikiPopPipeline {
     pipeline: Pipeline,
 }
 
+#[derive(Deserialize)]
+struct CoreConfiguration {
+    ocr_provider: String,
+}
+
+impl From<CoreConfiguration> for PipelineRuntimeConfig {
+    fn from(config: CoreConfiguration) -> Self {
+        Self {
+            ocr_provider: config.ocr_provider,
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Event {
     CaptureReady,
+    OcrProviders {
+        providers: Vec<Provider>,
+        active_provider: String,
+        error: Option<String>,
+    },
     Show {
         entries: Vec<Entry>,
         kanji: Option<Kanji>,
@@ -47,6 +66,21 @@ enum Event {
     Error {
         message: String,
     },
+}
+
+#[derive(Serialize)]
+struct Provider {
+    id: &'static str,
+    name: &'static str,
+}
+
+impl From<OcrProviderInfo> for Provider {
+    fn from(provider: OcrProviderInfo) -> Self {
+        Self {
+            id: provider.id,
+            name: provider.name,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -108,6 +142,15 @@ impl From<PipelineEvent> for Event {
     fn from(event: PipelineEvent) -> Self {
         match event {
             PipelineEvent::CaptureReady => Self::CaptureReady,
+            PipelineEvent::OcrProvidersChanged {
+                providers,
+                active_provider,
+                error,
+            } => Self::OcrProviders {
+                providers: providers.into_iter().map(Provider::from).collect(),
+                active_provider,
+                error,
+            },
             PipelineEvent::LookupResult { entries, kanji, .. } => Self::Show {
                 entries: entries.into_iter().map(Entry::from).collect(),
                 kanji: kanji.map(Kanji::from),
@@ -126,10 +169,12 @@ impl From<PipelineEvent> for Event {
 ///
 /// # Safety
 /// `dictionary_path` must point to a valid NUL-terminated UTF-8 string.
+/// `config_json` must point to a valid NUL-terminated UTF-8 string.
 /// `error_out`, when non-null, must be valid for writing one pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn meikipop_pipeline_start(
     dictionary_path: *const c_char,
+    config_json: *const c_char,
     error_out: *mut *mut c_char,
 ) -> *mut MeikiPopPipeline {
     if !error_out.is_null() {
@@ -144,6 +189,13 @@ pub unsafe extern "C" fn meikipop_pipeline_start(
             return ptr::null_mut();
         }
     };
+    let runtime = match configuration_argument(config_json) {
+        Ok(config) => config,
+        Err(error) => {
+            set_error(error_out, error);
+            return ptr::null_mut();
+        }
+    };
 
     let config = PipelineConfig {
         dictionary_path,
@@ -153,6 +205,7 @@ pub unsafe extern "C" fn meikipop_pipeline_start(
         max_lookup_length: MAX_LOOKUP_LENGTH,
         show_kanji: true,
         capture_interval: Duration::from_millis(300),
+        runtime,
     };
 
     match Pipeline::start(config) {
@@ -162,6 +215,27 @@ pub unsafe extern "C" fn meikipop_pipeline_start(
             ptr::null_mut()
         }
     }
+}
+
+/// Queues new frontend-owned runtime configuration. Applied state is reported
+/// asynchronously through pipeline events. Returns false for invalid JSON,
+/// invalid pointers, or a stopped pipeline.
+///
+/// # Safety
+/// `pipeline` must be null or a live pointer returned by
+/// `meikipop_pipeline_start`. `config_json` must point to valid UTF-8 C text.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn meikipop_pipeline_update_config(
+    pipeline: *mut MeikiPopPipeline,
+    config_json: *const c_char,
+) -> bool {
+    let Some(pipeline) = (unsafe { pipeline.as_ref() }) else {
+        return false;
+    };
+    let Ok(config) = configuration_argument(config_json) else {
+        return false;
+    };
+    pipeline.pipeline.update_config(config).is_ok()
 }
 
 /// Returns the next event as a Rust-owned JSON string, or null when the queue
@@ -251,6 +325,13 @@ fn c_string_argument(pointer: *const c_char, name: &str) -> Result<String, Strin
         .map_err(|_| format!("{name} must be valid UTF-8"))
 }
 
+fn configuration_argument(pointer: *const c_char) -> Result<PipelineRuntimeConfig, String> {
+    let json = c_string_argument(pointer, "config_json")?;
+    serde_json::from_str::<CoreConfiguration>(&json)
+        .map(PipelineRuntimeConfig::from)
+        .map_err(|error| format!("Invalid pipeline configuration: {error}"))
+}
+
 fn set_error(error_out: *mut *mut c_char, message: String) {
     if error_out.is_null() {
         return;
@@ -258,5 +339,27 @@ fn set_error(error_out: *mut *mut c_char, message: String) {
     if let Ok(message) = CString::new(message) {
         // SAFETY: The caller guarantees that `error_out` is writable.
         unsafe { *error_out = message.into_raw() };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CString;
+
+    use super::configuration_argument;
+
+    #[test]
+    fn parses_frontend_runtime_configuration() {
+        let json = CString::new(r#"{"ocr_provider":"apple_vision"}"#).unwrap();
+        let config = configuration_argument(json.as_ptr()).unwrap();
+
+        assert_eq!(config.ocr_provider, "apple_vision");
+    }
+
+    #[test]
+    fn rejects_incomplete_runtime_configuration() {
+        let json = CString::new("{}").unwrap();
+
+        assert!(configuration_argument(json.as_ptr()).is_err());
     }
 }

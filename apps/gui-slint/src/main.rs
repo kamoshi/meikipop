@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use fontdb::{Database, Family, Query};
 use meikipop_native::dictionary::lookup::{DictionaryEntry, KanjiEntry};
-use meikipop_native::pipeline::{Pipeline, PipelineConfig, PipelineEvent};
+use meikipop_native::ocr::ocr::DEFAULT_PROVIDER_ID;
+use meikipop_native::pipeline::{
+    Pipeline, PipelineConfig, PipelineEvent, PipelineRuntimeConfig,
+};
 use meikipop_native::screenshot::interface::CaptureGeometry;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
@@ -185,6 +188,23 @@ fn process_pipeline_events(
         };
         match event {
             PipelineEvent::CaptureReady => {}
+            PipelineEvent::OcrProvidersChanged {
+                providers,
+                active_provider,
+                error,
+            } => {
+                tracing::info!(
+                    "OCR providers: [{}]; active: {active_provider}",
+                    providers
+                        .iter()
+                        .map(|provider| provider.name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                if let Some(error) = error {
+                    tracing::warn!("Could not change OCR provider: {error}");
+                }
+            }
             PipelineEvent::LookupResult {
                 entries,
                 kanji,
@@ -430,6 +450,10 @@ fn pipeline_config() -> PipelineConfig {
         max_lookup_length: MAX_LOOKUP_LENGTH,
         show_kanji: true,
         capture_interval: Duration::from_millis(300),
+        runtime: PipelineRuntimeConfig {
+            ocr_provider: std::env::var("MEIKIPOP_OCR_PROVIDER")
+                .unwrap_or_else(|_| DEFAULT_PROVIDER_ID.to_owned()),
+        },
     }
 }
 

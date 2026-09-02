@@ -23,6 +23,11 @@ struct LookupKanji: Decodable {
 
 enum RustPipelineEvent {
     case captureReady
+    case ocrProviders(
+        providers: [OCRProviderOption],
+        activeProvider: String,
+        error: String?
+    )
     case show(entries: [LookupEntry], kanji: LookupKanji?)
     case hide
     case error(String)
@@ -40,12 +45,18 @@ private struct WireEvent: Decodable {
     let entries: [LookupEntry]?
     let kanji: LookupKanji?
     let message: String?
+    let providers: [OCRProviderOption]?
+    let activeProvider: String?
+    let error: String?
 
     private enum CodingKeys: String, CodingKey {
         case kind = "type"
         case entries
         case kanji
         case message
+        case providers
+        case activeProvider
+        case error
     }
 }
 
@@ -55,17 +66,24 @@ private struct PipelineStartError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+private struct RustCoreConfiguration: Encodable {
+    let ocrProvider: String
+}
+
 @MainActor
 final class RustPipeline {
     private let decoder: JSONDecoder
     private var handle: OpaquePointer?
 
-    init(dictionaryPath: String) throws {
+    init(dictionaryPath: String, ocrProvider: String) throws {
         meikipop_logging_init()
 
         var errorPointer: UnsafeMutablePointer<CChar>?
+        let configJSON = try Self.encodeConfiguration(ocrProvider: ocrProvider)
         handle = dictionaryPath.withCString { path in
-            meikipop_pipeline_start(path, &errorPointer)
+            configJSON.withCString { config in
+                meikipop_pipeline_start(path, config, &errorPointer)
+            }
         }
 
         guard handle != nil else {
@@ -100,6 +118,15 @@ final class RustPipeline {
             switch event.kind {
             case "capture_ready":
                 return .captureReady
+            case "ocr_providers":
+                guard let activeProvider = event.activeProvider else {
+                    return .error("Native OCR provider event omitted its active provider")
+                }
+                return .ocrProviders(
+                    providers: event.providers ?? [],
+                    activeProvider: activeProvider,
+                    error: event.error
+                )
             case "show":
                 return .show(entries: event.entries ?? [], kanji: event.kanji)
             case "hide":
@@ -112,6 +139,30 @@ final class RustPipeline {
         } catch {
             return .error("Could not decode native event: \(error.localizedDescription)")
         }
+    }
+
+    func updateConfiguration(ocrProvider: String) {
+        guard let handle else { return }
+        guard let configJSON = try? Self.encodeConfiguration(ocrProvider: ocrProvider) else {
+            NSLog("Could not encode Rust core configuration")
+            return
+        }
+        let queued = configJSON.withCString {
+            meikipop_pipeline_update_config(handle, $0)
+        }
+        if !queued {
+            NSLog("Could not queue Rust core configuration")
+        }
+    }
+
+    private static func encodeConfiguration(ocrProvider: String) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let data = try encoder.encode(RustCoreConfiguration(ocrProvider: ocrProvider))
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw PipelineStartError(message: "Could not encode Rust core configuration as UTF-8")
+        }
+        return json
     }
 
     func setPopupBounds(_ bounds: PopupCaptureBounds?) {

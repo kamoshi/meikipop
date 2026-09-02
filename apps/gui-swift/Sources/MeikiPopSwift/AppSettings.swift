@@ -8,7 +8,7 @@ struct AppConfiguration: Codable, Equatable {
 
     struct General: Codable, Equatable {
         var hotkey: Hotkey = .shift
-        var ocrProvider: OCRProvider = .meikiOCR
+        var ocrProvider = "meikiocr"
         var googleLensCompression = false
         var maxLookupLength = 25
         var onlyScanOnMouseMove = true
@@ -71,18 +71,9 @@ enum Hotkey: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-enum OCRProvider: String, Codable, CaseIterable, Identifiable {
-    case meikiOCR = "meikiocr"
-    case appleVision = "apple_vision"
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .meikiOCR: "meikiocr (local)"
-        case .appleVision: "apple_vision (macOS)"
-        }
-    }
+struct OCRProviderOption: Decodable, Identifiable, Equatable {
+    let id: String
+    let name: String
 }
 
 enum PositionMode: String, Codable, CaseIterable, Identifiable {
@@ -134,6 +125,7 @@ enum Theme: String, Codable, CaseIterable, Identifiable {
 @MainActor
 final class AppSettings: NSObject, ObservableObject {
     @Published var configuration: AppConfiguration
+    @Published private(set) var availableOCRProviders: [OCRProviderOption] = []
 
     private var savedConfiguration: AppConfiguration
     private let fileURL: URL
@@ -169,6 +161,16 @@ final class AppSettings: NSObject, ObservableObject {
 
     func discardChanges() {
         configuration = savedConfiguration
+    }
+
+    func updateOCRProviders(
+        _ providers: [OCRProviderOption],
+        activeProvider: String
+    ) {
+        availableOCRProviders = providers
+        if configuration.general.ocrProvider != activeProvider {
+            configuration.general.ocrProvider = activeProvider
+        }
     }
 
     private static func load(from fileURL: URL) -> AppConfiguration? {

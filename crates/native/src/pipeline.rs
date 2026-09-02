@@ -11,9 +11,22 @@ use crate::dictionary::lookup::{DictionaryEntry, KanjiEntry, LookupEngine};
 use crate::input::interface::{PointerProvider, PointerSnapshot};
 use crate::ocr::hit_scan::hit_scan;
 use crate::ocr::interface::{NormalizedPoint, OcrContext, Paragraph};
-use crate::ocr::ocr::OcrProcessor;
+use crate::ocr::ocr::{DEFAULT_PROVIDER_ID, OcrProcessor, OcrProviderInfo};
 use crate::platform::create_desktop_providers;
 use crate::screenshot::interface::{CaptureGeometry, CapturedFrame, FrameProvider};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PipelineRuntimeConfig {
+    pub ocr_provider: String,
+}
+
+impl Default for PipelineRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            ocr_provider: DEFAULT_PROVIDER_ID.to_owned(),
+        }
+    }
+}
 
 pub struct PipelineConfig {
     pub dictionary_path: PathBuf,
@@ -22,11 +35,17 @@ pub struct PipelineConfig {
     pub max_lookup_length: usize,
     pub show_kanji: bool,
     pub capture_interval: Duration,
+    pub runtime: PipelineRuntimeConfig,
 }
 
 #[derive(Debug)]
 pub enum PipelineEvent {
     CaptureReady,
+    OcrProvidersChanged {
+        providers: Vec<OcrProviderInfo>,
+        active_provider: String,
+        error: Option<String>,
+    },
     LookupResult {
         entries: Vec<DictionaryEntry>,
         kanji: Option<KanjiEntry>,
@@ -45,6 +64,7 @@ pub struct Pipeline {
     event_receiver: Receiver<PipelineEvent>,
     running: Arc<AtomicBool>,
     popup_state: SharedPopupState,
+    command_sender: Sender<PipelineCommand>,
     coordinator: Option<JoinHandle<()>>,
 }
 
@@ -59,6 +79,10 @@ struct PopupState {
     bounds: Option<CaptureGeometry>,
 }
 
+enum PipelineCommand {
+    UpdateConfig(PipelineRuntimeConfig),
+}
+
 impl PopupState {
     fn capture_is_paused(&self) -> bool {
         self.expected_visible || self.bounds.is_some()
@@ -67,28 +91,31 @@ impl PopupState {
 
 impl Pipeline {
     pub fn start(config: PipelineConfig) -> Result<Self, std::io::Error> {
-        Self::start_with_runner(move |running, popup_state, event_sender| {
-            let screencast_token = config.screencast_token_path.to_string_lossy().into_owned();
-            let providers = match create_desktop_providers(screencast_token) {
-                Ok(providers) => providers,
-                Err(error) => {
-                    send_error(
-                        &event_sender,
-                        "Failed to initialize desktop providers",
-                        error,
-                    );
-                    return;
-                }
-            };
-            run_pipeline(
-                config,
-                providers.frames,
-                providers.pointer,
-                running,
-                popup_state,
-                event_sender,
-            );
-        })
+        Self::start_with_runner(
+            move |running, popup_state, command_receiver, event_sender| {
+                let screencast_token = config.screencast_token_path.to_string_lossy().into_owned();
+                let providers = match create_desktop_providers(screencast_token) {
+                    Ok(providers) => providers,
+                    Err(error) => {
+                        send_error(
+                            &event_sender,
+                            "Failed to initialize desktop providers",
+                            error,
+                        );
+                        return;
+                    }
+                };
+                run_pipeline(
+                    config,
+                    providers.frames,
+                    providers.pointer,
+                    running,
+                    popup_state,
+                    command_receiver,
+                    event_sender,
+                );
+            },
+        )
     }
 
     pub fn start_with_providers(
@@ -96,22 +123,32 @@ impl Pipeline {
         frame_provider: Box<dyn FrameProvider>,
         pointer_provider: Box<dyn PointerProvider>,
     ) -> Result<Self, std::io::Error> {
-        Self::start_with_runner(move |running, popup_state, event_sender| {
-            run_pipeline(
-                config,
-                frame_provider,
-                pointer_provider,
-                running,
-                popup_state,
-                event_sender,
-            );
-        })
+        Self::start_with_runner(
+            move |running, popup_state, command_receiver, event_sender| {
+                run_pipeline(
+                    config,
+                    frame_provider,
+                    pointer_provider,
+                    running,
+                    popup_state,
+                    command_receiver,
+                    event_sender,
+                );
+            },
+        )
     }
 
     fn start_with_runner(
-        runner: impl FnOnce(Arc<AtomicBool>, SharedPopupState, Sender<PipelineEvent>) + Send + 'static,
+        runner: impl FnOnce(
+            Arc<AtomicBool>,
+            SharedPopupState,
+            Receiver<PipelineCommand>,
+            Sender<PipelineEvent>,
+        ) + Send
+        + 'static,
     ) -> Result<Self, std::io::Error> {
         let (event_sender, event_receiver) = crossbeam_channel::unbounded();
+        let (command_sender, command_receiver) = crossbeam_channel::unbounded();
         let running = Arc::new(AtomicBool::new(true));
         let popup_state = Arc::new(Mutex::new(PopupState::default()));
         let coordinator = {
@@ -119,13 +156,14 @@ impl Pipeline {
             let popup_state = Arc::clone(&popup_state);
             thread::Builder::new()
                 .name("PipelineInit".to_owned())
-                .spawn(move || runner(running, popup_state, event_sender))?
+                .spawn(move || runner(running, popup_state, command_receiver, event_sender))?
         };
 
         Ok(Self {
             event_receiver,
             running,
             popup_state,
+            command_sender,
             coordinator: Some(coordinator),
         })
     }
@@ -143,6 +181,14 @@ impl Pipeline {
             .unwrap_or_else(|error| error.into_inner());
         state.expected_visible = bounds.is_some();
         state.bounds = bounds;
+    }
+
+    /// Applies frontend-owned runtime configuration on the workers which own
+    /// the affected components.
+    pub fn update_config(&self, config: PipelineRuntimeConfig) -> Result<(), &'static str> {
+        self.command_sender
+            .send(PipelineCommand::UpdateConfig(config))
+            .map_err(|_| "OCR worker is no longer running")
     }
 
     pub fn shutdown(&mut self) {
@@ -188,12 +234,18 @@ struct RecognizedFrame {
     capture_geometry: CaptureGeometry,
 }
 
+enum OcrOutput {
+    Reset,
+    Frame(RecognizedFrame),
+}
+
 fn run_pipeline(
     config: PipelineConfig,
     mut frame_provider: Box<dyn FrameProvider>,
     pointer_provider: Box<dyn PointerProvider>,
     running: Arc<AtomicBool>,
     popup_state: SharedPopupState,
+    command_receiver: Receiver<PipelineCommand>,
     event_sender: Sender<PipelineEvent>,
 ) {
     log::debug!("Initializing native OCR pipeline");
@@ -220,7 +272,7 @@ fn run_pipeline(
     }
     let _ = event_sender.send(PipelineEvent::CaptureReady);
 
-    let ocr_processor = match OcrProcessor::new() {
+    let ocr_processor = match OcrProcessor::new_with_provider(Some(&config.runtime.ocr_provider)) {
         Ok(processor) => processor,
         Err(error) => {
             send_error(&event_sender, "Failed to initialize OCR", error);
@@ -228,6 +280,7 @@ fn run_pipeline(
         }
     };
     log::info!("OCR processor initialized");
+    send_ocr_provider_state(&event_sender, &ocr_processor, None);
 
     let lookup_engine =
         match LookupEngine::open_paths(&config.dictionary_path, config.max_dict_entries) {
@@ -280,6 +333,8 @@ fn run_pipeline(
             ocr_processor,
             screenshot_receiver,
             ocr_sender,
+            command_receiver,
+            event_sender.clone(),
         ),
         spawn_lookup_worker(
             Arc::clone(&running),
@@ -351,7 +406,9 @@ fn spawn_ocr_worker(
     running: Arc<AtomicBool>,
     mut ocr_processor: OcrProcessor,
     screenshot_receiver: Receiver<OcrWorkItem>,
-    ocr_sender: Sender<RecognizedFrame>,
+    ocr_sender: Sender<OcrOutput>,
+    command_receiver: Receiver<PipelineCommand>,
+    event_sender: Sender<PipelineEvent>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("OcrWorker".to_owned())
@@ -360,6 +417,21 @@ fn spawn_ocr_worker(
             let mut ocr_sequence = 0_u64;
             log::debug!("OCR worker started");
             while running.load(Ordering::Acquire) {
+                while let Ok(command) = command_receiver.try_recv() {
+                    match command {
+                        PipelineCommand::UpdateConfig(config) => {
+                            let switch_result = ocr_processor.switch_provider(&config.ocr_provider);
+                            if matches!(&switch_result, Ok(true)) {
+                                last_scan = None;
+                                if !send_while_running(&ocr_sender, OcrOutput::Reset, &running) {
+                                    return;
+                                }
+                            }
+                            let error = switch_result.err().map(|error| error.to_string());
+                            send_ocr_provider_state(&event_sender, &ocr_processor, error);
+                        }
+                    }
+                }
                 let work = match screenshot_receiver.recv_timeout(Duration::from_millis(50)) {
                     Ok(work) => work,
                     Err(RecvTimeoutError::Timeout) => continue,
@@ -396,7 +468,7 @@ fn spawn_ocr_worker(
                 let result = (|| -> Result<Vec<Paragraph>, Box<dyn Error>> {
                     let image = work.frame.screenshot.to_rgb()?;
                     ocr_processor.scan_rgb(&image, context)?;
-                    Ok(ocr_processor.last_ocr_result.take().unwrap_or_default())
+                    Ok(ocr_processor.take_last_result())
                 })();
 
                 match result {
@@ -418,12 +490,12 @@ fn spawn_ocr_worker(
                         ocr_sequence = ocr_sequence.wrapping_add(1);
                         if !send_while_running(
                             &ocr_sender,
-                            RecognizedFrame {
+                            OcrOutput::Frame(RecognizedFrame {
                                 source_generation: work.frame.source_generation,
                                 scan_sequence: ocr_sequence,
                                 paragraphs,
                                 capture_geometry: work.frame.geometry,
-                            },
+                            }),
                             &running,
                         ) {
                             break;
@@ -443,7 +515,7 @@ fn spawn_hit_scan_worker(
     capture_geometry: Option<CaptureGeometry>,
     popup_state: SharedPopupState,
     latest_pointer: Arc<Mutex<Option<PointerSnapshot>>>,
-    ocr_receiver: Receiver<RecognizedFrame>,
+    ocr_receiver: Receiver<OcrOutput>,
     lookup_sender: Sender<LookupRequest>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
@@ -455,8 +527,11 @@ fn spawn_hit_scan_worker(
             let mut last_pointer_error = None;
 
             while running.load(Ordering::Acquire) {
-                while let Ok(latest_frame) = ocr_receiver.try_recv() {
-                    recognized_frame = Some(latest_frame);
+                while let Ok(output) = ocr_receiver.try_recv() {
+                    match output {
+                        OcrOutput::Reset => recognized_frame = None,
+                        OcrOutput::Frame(latest_frame) => recognized_frame = Some(latest_frame),
+                    }
                 }
 
                 let pointer = match pointer_provider.snapshot() {
@@ -659,6 +734,18 @@ fn hide_popup_if_visible(
     if should_hide {
         let _ = sender.send(PipelineEvent::HidePopup { mouse_x, mouse_y });
     }
+}
+
+fn send_ocr_provider_state(
+    sender: &Sender<PipelineEvent>,
+    processor: &OcrProcessor,
+    error: Option<String>,
+) {
+    let _ = sender.send(PipelineEvent::OcrProvidersChanged {
+        providers: OcrProcessor::available_providers(),
+        active_provider: processor.active_provider_id().to_owned(),
+        error,
+    });
 }
 
 fn send_error(sender: &Sender<PipelineEvent>, context: &str, error: impl std::fmt::Display) {
