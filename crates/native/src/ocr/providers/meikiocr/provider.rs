@@ -4,8 +4,8 @@
 use super::ocr::{MeikiOcr, OcrResult};
 
 // Import the "contract" classes from your application's interface
-use crate::ocr::interface::{BoundingBox, Mat, OcrContext, OcrProvider, Paragraph, Word};
-use crate::ocr::providers::postprocessing::group_lines_into_paragraphs;
+use crate::ocr::interface::{BoundingBox, Mat, OcrProvider, Paragraph, Word};
+use crate::ocr::providers::postprocessing::{contains_japanese_text, group_lines_into_paragraphs};
 
 // --- pipeline configuration ---
 // These thresholds are passed to the library's run_ocr method.
@@ -77,10 +77,7 @@ impl MeikiOcrProvider {
         for line_result in ocr_results {
             let full_text = line_result.text.trim().to_owned();
             let chars = line_result.chars;
-            if full_text.is_empty()
-                || chars.is_empty()
-                || !full_text.chars().any(is_japanese_character)
-            {
+            if full_text.is_empty() || chars.is_empty() || !contains_japanese_text(&full_text) {
                 continue;
             }
 
@@ -139,20 +136,9 @@ impl OcrProvider for MeikiOcrProvider {
         "meikiocr (local)"
     }
 
-    fn scan(
-        &mut self,
-        image: &Mat,
-        _context: OcrContext,
-    ) -> Result<Vec<Paragraph>, Box<dyn std::error::Error>> {
+    fn scan(&mut self, image: &Mat) -> Result<Vec<Paragraph>, Box<dyn std::error::Error>> {
         MeikiOcrProvider::scan(self, image)
     }
-}
-
-fn is_japanese_character(character: char) -> bool {
-    matches!(
-        character,
-        '\u{3040}'..='\u{309f}' | '\u{30a0}'..='\u{30ff}' | '\u{4e00}'..='\u{9faf}'
-    )
 }
 
 #[cfg(test)]

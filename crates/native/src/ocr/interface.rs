@@ -9,12 +9,6 @@ pub struct NormalizedPoint {
     pub y: f64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct OcrContext {
-    /// Point of interest in image coordinates with a top-left origin.
-    pub focus_point: Option<NormalizedPoint>,
-}
-
 /// Abstract interface for an OCR provider.
 ///
 /// Any type that implements this interface can be used by the application's
@@ -33,7 +27,7 @@ pub trait OcrProvider: Send {
     ///
     /// A list of Paragraph objects found in the image, or an error if one
     /// occurred. Returns an empty list if no text is found.
-    fn scan(&mut self, image: &Mat, context: OcrContext) -> Result<Vec<Paragraph>, Box<dyn Error>>;
+    fn scan(&mut self, image: &Mat) -> Result<Vec<Paragraph>, Box<dyn Error>>;
 }
 
 /// A normalized bounding box. All coordinates are floats between 0.0 and 1.0.

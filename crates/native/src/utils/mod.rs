@@ -1,1 +1,1 @@
-pub mod latest_queue;
+pub mod latest_mailbox;

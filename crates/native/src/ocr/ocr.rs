@@ -2,10 +2,8 @@
 
 use std::error::Error;
 
-use crate::ocr::hit_scan;
-use crate::ocr::interface::{Mat, OcrContext, OcrProvider, Paragraph};
+use crate::ocr::interface::{Mat, OcrProvider, Paragraph};
 use crate::ocr::providers::meikiocr::provider::MeikiOcrProvider;
-use crate::screenshot::interface::RgbImage;
 
 pub const DEFAULT_PROVIDER_ID: &str = "meikiocr";
 #[cfg(target_os = "macos")]
@@ -31,7 +29,6 @@ const APPLE_VISION_PROVIDER: OcrProviderInfo = OcrProviderInfo {
 pub struct OcrProcessor {
     ocr_backend: Box<dyn OcrProvider>,
     active_provider_id: &'static str,
-    last_ocr_result: Option<Vec<Paragraph>>,
 }
 
 impl OcrProcessor {
@@ -55,33 +52,11 @@ impl OcrProcessor {
         Ok(Self {
             ocr_backend,
             active_provider_id,
-            last_ocr_result: None,
         })
     }
 
-    pub fn scan(&mut self, image: &Mat, context: OcrContext) -> Result<usize, Box<dyn Error>> {
-        let ocr_result = self.ocr_backend.scan(image, context)?;
-        let paragraph_count = ocr_result.len();
-        // todo keep last ocr result?
-        self.last_ocr_result = Some(ocr_result);
-        Ok(paragraph_count)
-    }
-
-    pub fn scan_rgb(
-        &mut self,
-        image: &RgbImage,
-        context: OcrContext,
-    ) -> Result<usize, Box<dyn Error>> {
-        self.scan(image, context)
-    }
-
-    pub fn hit_scan(&self, norm_x: f64, norm_y: f64) -> Option<String> {
-        let paragraphs = self.last_ocr_result.as_deref()?;
-        hit_scan::hit_scan(paragraphs, norm_x, norm_y)
-    }
-
-    pub fn take_last_result(&mut self) -> Vec<Paragraph> {
-        self.last_ocr_result.take().unwrap_or_default()
+    pub fn scan(&mut self, image: &Mat) -> Result<Vec<Paragraph>, Box<dyn Error>> {
+        self.ocr_backend.scan(image)
     }
 
     pub fn active_provider_id(&self) -> &'static str {
@@ -108,7 +83,6 @@ impl OcrProcessor {
         let provider = Self::create_provider(provider_id)?;
         self.ocr_backend = provider;
         self.active_provider_id = info.id;
-        self.last_ocr_result = None;
         log::info!("Switched OCR provider to '{}'", info.name);
         Ok(true)
     }
@@ -184,7 +158,6 @@ mod tests {
         let mut processor = OcrProcessor {
             ocr_backend: Box::new(DummyProvider),
             active_provider_id: DEFAULT_PROVIDER_ID,
-            last_ocr_result: None,
         };
 
         assert!(processor.switch_provider("not_registered").is_err());
@@ -193,16 +166,13 @@ mod tests {
     }
 
     #[test]
-    fn keeps_paragraphs_in_rust_for_later_hit_scans() {
+    fn returns_provider_paragraphs_directly() {
         let mut processor = OcrProcessor {
             ocr_backend: Box::new(DummyProvider),
             active_provider_id: DEFAULT_PROVIDER_ID,
-            last_ocr_result: None,
         };
         let image = Mat::new(800, 600);
 
-        assert_eq!(processor.scan(&image, OcrContext::default()).unwrap(), 2);
-        assert_eq!(processor.last_ocr_result.as_ref().unwrap().len(), 2);
-        assert!(processor.hit_scan(0.15, 0.28).is_some());
+        assert_eq!(processor.scan(&image).unwrap().len(), 2);
     }
 }

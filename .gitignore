@@ -6,7 +6,6 @@
 !/.gitignore
 !/LICENSE
 !/Makefile
-!/OCR_pipeline.md
 !/README.md
 !/flake.lock
 !/flake.nix

@@ -3,6 +3,16 @@ use crate::ocr::interface::{BoundingBox, Paragraph};
 pub const FURIGANA_VERTICAL_WIDTH_THRESHOLD: f64 = 0.65;
 pub const FURIGANA_HORIZONTAL_HEIGHT_THRESHOLD: f64 = 0.65;
 
+/// Returns whether text can produce a useful lookup in this Japanese dictionary app.
+pub fn contains_japanese_text(text: &str) -> bool {
+    text.chars().any(|character| {
+        matches!(
+            character,
+            '\u{3040}'..='\u{309f}' | '\u{30a0}'..='\u{30ff}' | '\u{4e00}'..='\u{9faf}'
+        )
+    })
+}
+
 /// Creates a single BoundingBox that encompasses all provided boxes.
 fn merge_bounding_boxes(boxes: &[BoundingBox]) -> BoundingBox {
     if boxes.is_empty() {
@@ -247,6 +257,15 @@ mod tests {
             (actual - expected).abs() < 1e-10,
             "expected {expected}, got {actual}"
         );
+    }
+
+    #[test]
+    fn identifies_text_relevant_to_japanese_lookup() {
+        assert!(contains_japanese_text("日本語"));
+        assert!(contains_japanese_text("かな and latin"));
+        assert!(contains_japanese_text("カナ"));
+        assert!(!contains_japanese_text("English only 123"));
+        assert!(!contains_japanese_text(""));
     }
 
     #[test]

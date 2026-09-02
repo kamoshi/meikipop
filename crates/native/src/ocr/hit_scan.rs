@@ -116,7 +116,7 @@ pub fn hit_scan(paragraphs: &[Paragraph], norm_x: f64, norm_y: f64) -> Option<St
             if word == target_word {
                 break;
             }
-            word_start_index += word.text.chars().count()
+            word_start_index += word.text.chars().count() + word.separator.chars().count()
         }
 
         let final_char_index = word_start_index + char_offset;
@@ -360,6 +360,29 @@ mod tests {
 
         // Near the beginning of the second word.
         assert_eq!(hit_scan(&[paragraph], 0.46, 0.5), Some("語です".into()),);
+    }
+
+    #[test]
+    fn word_separators_are_included_in_full_text_offsets() {
+        let paragraph = Paragraph {
+            full_text: "日 本".into(),
+            words: vec![
+                Word {
+                    text: "日".into(),
+                    separator: " ".into(),
+                    r#box: BoundingBox::new(0.25, 0.5, 0.2, 0.2),
+                },
+                Word {
+                    text: "本".into(),
+                    separator: String::new(),
+                    r#box: BoundingBox::new(0.65, 0.5, 0.2, 0.2),
+                },
+            ],
+            r#box: BoundingBox::new(0.45, 0.5, 0.6, 0.2),
+            is_vertical: false,
+        };
+
+        assert_eq!(hit_scan(&[paragraph], 0.65, 0.5), Some("本".into()));
     }
 
     #[test]
