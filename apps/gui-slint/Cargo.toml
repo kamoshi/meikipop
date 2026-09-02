@@ -19,7 +19,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 slint = { version = "=1.17.0", default-features = false, features = [
     "backend-winit-x11",
-    "renderer-software",
+    "renderer-skia",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
