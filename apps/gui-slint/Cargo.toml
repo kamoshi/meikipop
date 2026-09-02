@@ -8,15 +8,25 @@ publish = false
 fontdb = "0.23"
 meikipop-native = { path = "../../crates/native" }
 slint = { version = "=1.17.0", default-features = false, features = [
-    "backend-winit-x11",
     "compat-1-2",
     "image-default-formats",
-    "renderer-software",
     "std",
     "system-tray",
 ] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+slint = { version = "=1.17.0", default-features = false, features = [
+    "backend-winit-x11",
+    "renderer-software",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+slint = { version = "=1.17.0", default-features = false, features = [
+    "backend-winit",
+    "renderer-femtovg-wgpu",
+] }
 
 [build-dependencies]
 slint-build = "=1.17.0"

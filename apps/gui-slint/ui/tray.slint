@@ -1,17 +1,35 @@
 export { OcrPopup, FormattedEntry } from "popup.slint";
 
+export struct OcrProviderOption {
+    id: string,
+    name: string,
+}
+
 export component MeikiPopTray inherits SystemTrayIcon {
     icon: @image-url("../../../resources/icon.ico");
-    title: "MeikiPop";
     tooltip: "MeikiPop";
+
+    in property <[OcrProviderOption]> ocr-providers;
+    in property <string> active-ocr-provider;
 
     callback quit();
     callback choose-screen();
+    callback choose-ocr-provider(string);
 
     Menu {
         MenuItem {
             title: "Choose screen";
             activated => { choose-screen(); }
+        }
+        Menu {
+            title: "Choose provider";
+
+            for provider in ocr-providers: MenuItem {
+                title: provider.name;
+                checkable: true;
+                checked: provider.id == active-ocr-provider;
+                activated => { choose-ocr-provider(provider.id); }
+            }
         }
         MenuSeparator { }
         MenuItem {

@@ -7,9 +7,7 @@ use std::time::Duration;
 use fontdb::{Database, Family, Query};
 use meikipop_native::dictionary::lookup::{DictionaryEntry, KanjiEntry};
 use meikipop_native::ocr::ocr::DEFAULT_PROVIDER_ID;
-use meikipop_native::pipeline::{
-    Pipeline, PipelineConfig, PipelineEvent, PipelineRuntimeConfig,
-};
+use meikipop_native::pipeline::{Pipeline, PipelineConfig, PipelineEvent, PipelineRuntimeConfig};
 use meikipop_native::screenshot::interface::CaptureGeometry;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
@@ -75,7 +73,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     popup.set_ui_font_family(font_family.into());
     let tray = MeikiPopTray::new()?;
-    let pipeline = Rc::new(RefCell::new(Pipeline::start(pipeline_config())?));
+    let runtime_config = Rc::new(RefCell::new(initial_runtime_config()));
+    let pipeline = Rc::new(RefCell::new(Pipeline::start(pipeline_config(
+        runtime_config.borrow().clone(),
+    ))?));
 
     // Create the native X11 window before the first OCR hit. On XWayland/KDE,
     // properties such as always-on-top and the final position are only applied
@@ -88,6 +89,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     let pipeline_for_screen_choice = Rc::clone(&pipeline);
+    let runtime_config_for_screen_choice = Rc::clone(&runtime_config);
     let popup_for_screen_choice = popup.as_weak();
     tray.on_choose_screen(move || {
         let token_path = screencast_token_path();
@@ -103,7 +105,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let mut pipeline = pipeline_for_screen_choice.borrow_mut();
         pipeline.shutdown();
-        match Pipeline::start(pipeline_config()) {
+        match Pipeline::start(pipeline_config(
+            runtime_config_for_screen_choice.borrow().clone(),
+        )) {
             Ok(new_pipeline) => {
                 *pipeline = new_pipeline;
                 if let Some(popup) = popup_for_screen_choice.upgrade() {
@@ -115,8 +119,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+    let pipeline_for_provider_choice = Rc::clone(&pipeline);
+    let runtime_config_for_provider_choice = Rc::clone(&runtime_config);
+    tray.on_choose_ocr_provider(move |provider_id| {
+        let config = PipelineRuntimeConfig {
+            ocr_provider: provider_id.to_string(),
+        };
+        match pipeline_for_provider_choice
+            .borrow()
+            .update_config(config.clone())
+        {
+            Ok(()) => *runtime_config_for_provider_choice.borrow_mut() = config,
+            Err(error) => tracing::warn!(%error, "Could not request an OCR provider change"),
+        }
+    });
+
     let popup_weak = popup.as_weak();
+    let tray_weak = tray.as_weak();
     let pipeline_for_updates = Rc::clone(&pipeline);
+    let runtime_config_for_updates = Rc::clone(&runtime_config);
     let hide_timer = Rc::new(slint::Timer::default());
     let hide_timer_for_updates = Rc::clone(&hide_timer);
     let popup_bounds = Rc::new(RefCell::new(None));
@@ -128,7 +149,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         move || {
             process_pipeline_events(
                 &popup_weak,
+                &tray_weak,
                 &pipeline_for_updates,
+                &runtime_config_for_updates,
                 &hide_timer_for_updates,
                 &popup_bounds_for_updates,
             )
@@ -178,14 +201,13 @@ fn preferred_font_family() -> String {
 
 fn process_pipeline_events(
     popup_weak: &slint::Weak<OcrPopup>,
+    tray_weak: &slint::Weak<MeikiPopTray>,
     pipeline: &Rc<RefCell<Pipeline>>,
+    runtime_config: &Rc<RefCell<PipelineRuntimeConfig>>,
     hide_timer: &Rc<slint::Timer>,
     popup_bounds: &Rc<RefCell<Option<PopupBounds>>>,
 ) {
     while let Some(event) = pipeline.borrow().try_recv() {
-        let Some(popup) = popup_weak.upgrade() else {
-            return;
-        };
         match event {
             PipelineEvent::CaptureReady => {}
             PipelineEvent::OcrProvidersChanged {
@@ -204,6 +226,19 @@ fn process_pipeline_events(
                 if let Some(error) = error {
                     tracing::warn!("Could not change OCR provider: {error}");
                 }
+                runtime_config.borrow_mut().ocr_provider = active_provider.clone();
+                if let Some(tray) = tray_weak.upgrade() {
+                    tray.set_ocr_providers(ModelRc::new(VecModel::from(
+                        providers
+                            .into_iter()
+                            .map(|provider| OcrProviderOption {
+                                id: provider.id.into(),
+                                name: provider.name.into(),
+                            })
+                            .collect::<Vec<_>>(),
+                    )));
+                    tray.set_active_ocr_provider(active_provider.into());
+                }
             }
             PipelineEvent::LookupResult {
                 entries,
@@ -212,6 +247,9 @@ fn process_pipeline_events(
                 mouse_y,
                 capture_geometry,
             } => {
+                let Some(popup) = popup_weak.upgrade() else {
+                    continue;
+                };
                 hide_timer.stop();
                 // A screenshot may already be queued for OCR when the popup is
                 // first shown. If that frame contains the popup, its lookup
@@ -293,12 +331,10 @@ fn process_pipeline_events(
                     .borrow()
                     .set_popup_bounds(Some(bounds.capture_geometry()));
             }
-            PipelineEvent::HidePopup { mouse_x, mouse_y } => {
-                if let Some(bounds) = *popup_bounds.borrow() {
-                    pipeline
-                        .borrow()
-                        .set_popup_bounds(Some(bounds.capture_geometry()));
-                }
+            PipelineEvent::HidePopup { .. } => {
+                let Some(popup) = popup_weak.upgrade() else {
+                    continue;
+                };
                 let popup_weak = popup.as_weak();
                 let pipeline = Rc::clone(pipeline);
                 let popup_bounds = Rc::clone(popup_bounds);
@@ -309,18 +345,20 @@ fn process_pipeline_events(
                         let Some(popup) = popup_weak.upgrade() else {
                             return;
                         };
-                        if !popup_bounds
-                            .borrow()
-                            .is_some_and(|bounds| bounds.contains(mouse_x, mouse_y))
-                        {
-                            let _ = popup.hide();
-                            *popup_bounds.borrow_mut() = None;
-                            pipeline.borrow().set_popup_bounds(None);
+                        if popup.get_pointer_inside() {
+                            tracing::debug!("Keeping popup open while the pointer is inside");
+                            return;
                         }
+                        let _ = popup.hide();
+                        *popup_bounds.borrow_mut() = None;
+                        pipeline.borrow().set_popup_bounds(None);
                     },
                 );
             }
             PipelineEvent::Error(error) => {
+                let Some(popup) = popup_weak.upgrade() else {
+                    continue;
+                };
                 hide_timer.stop();
                 popup.set_has_error(true);
                 popup.set_error_text(error.into());
@@ -442,7 +480,7 @@ fn dictionary_path() -> PathBuf {
     data_dir().join("meikipop").join("dictionary.pkl")
 }
 
-fn pipeline_config() -> PipelineConfig {
+fn pipeline_config(runtime: PipelineRuntimeConfig) -> PipelineConfig {
     PipelineConfig {
         dictionary_path: dictionary_path(),
         screencast_token_path: screencast_token_path(),
@@ -450,10 +488,14 @@ fn pipeline_config() -> PipelineConfig {
         max_lookup_length: MAX_LOOKUP_LENGTH,
         show_kanji: true,
         capture_interval: Duration::from_millis(300),
-        runtime: PipelineRuntimeConfig {
-            ocr_provider: std::env::var("MEIKIPOP_OCR_PROVIDER")
-                .unwrap_or_else(|_| DEFAULT_PROVIDER_ID.to_owned()),
-        },
+        runtime,
+    }
+}
+
+fn initial_runtime_config() -> PipelineRuntimeConfig {
+    PipelineRuntimeConfig {
+        ocr_provider: std::env::var("MEIKIPOP_OCR_PROVIDER")
+            .unwrap_or_else(|_| DEFAULT_PROVIDER_ID.to_owned()),
     }
 }
 

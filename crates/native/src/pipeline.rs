@@ -74,6 +74,8 @@ type SharedPopupState = Arc<Mutex<PopupState>>;
 struct PopupState {
     /// The pipeline has emitted content which the frontend has not dismissed.
     expected_visible: bool,
+    /// A dismissal request has been emitted and is awaiting a frontend decision.
+    dismissal_pending: bool,
     /// Bounds last confirmed by the frontend. They remain authoritative during
     /// delayed dismissal so neither capture nor hit testing can see through it.
     bounds: Option<CaptureGeometry>,
@@ -86,6 +88,40 @@ enum PipelineCommand {
 impl PopupState {
     fn capture_is_paused(&self) -> bool {
         self.expected_visible || self.bounds.is_some()
+    }
+
+    fn update_bounds(&mut self, bounds: Option<CaptureGeometry>) {
+        self.expected_visible = bounds.is_some();
+        if bounds.is_none() {
+            self.dismissal_pending = false;
+        }
+        self.bounds = bounds;
+    }
+
+    fn mark_content_available(&mut self) {
+        self.expected_visible = true;
+        self.dismissal_pending = false;
+    }
+
+    fn request_dismissal(&mut self) -> bool {
+        if !self.expected_visible || self.dismissal_pending {
+            return false;
+        }
+        self.dismissal_pending = true;
+        true
+    }
+
+    fn pointer_is_blocked(&mut self, pointer: (i32, i32)) -> bool {
+        let blocked = self
+            .bounds
+            .as_ref()
+            .is_some_and(|bounds| bounds.contains(pointer));
+        if blocked {
+            // Entering the popup rejects a pending dismissal. Once the pointer
+            // leaves, the next lookup miss can request dismissal again.
+            self.dismissal_pending = false;
+        }
+        blocked
     }
 }
 
@@ -179,8 +215,7 @@ impl Pipeline {
             .popup_state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        state.expected_visible = bounds.is_some();
-        state.bounds = bounds;
+        state.update_bounds(bounds);
     }
 
     /// Applies frontend-owned runtime configuration on the workers which own
@@ -561,9 +596,7 @@ fn spawn_hit_scan_worker(
                 let pointer_blocked_by_popup = popup_state
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
-                    .bounds
-                    .as_ref()
-                    .is_some_and(|bounds| bounds.contains(pointer.position));
+                    .pointer_is_blocked(pointer.position);
                 let current_input = LookupInput {
                     pointer: pointer.position,
                     capture_geometry: active_geometry.clone(),
@@ -659,6 +692,10 @@ fn spawn_lookup_worker(
                     let result =
                         lookup_engine.lookup_cached(&lookup_string, max_lookup_length, show_kanji);
                     if !result.entries.is_empty() || result.kanji_entry.is_some() {
+                        popup_state
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .mark_content_available();
                         log::debug!(
                             "Sending lookup result at mouse ({}, {}) in capture source left={}, top={}, width={}, height={}",
                             request.mouse_x,
@@ -680,10 +717,6 @@ fn spawn_lookup_worker(
                         {
                             break;
                         }
-                        popup_state
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner())
-                            .expected_visible = true;
                     } else {
                         hide_popup_if_visible(
                             &event_sender,
@@ -727,9 +760,7 @@ fn hide_popup_if_visible(
         let mut state = popup_state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let was_expected_visible = state.expected_visible;
-        state.expected_visible = false;
-        was_expected_visible
+        state.request_dismissal()
     };
     if should_hide {
         let _ = sender.send(PipelineEvent::HidePopup { mouse_x, mouse_y });
@@ -817,17 +848,30 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_popup_bounds_keep_capture_paused_during_delayed_dismissal() {
-        let mut state = PopupState {
-            expected_visible: true,
-            bounds: Some(geometry(10, 20, 300, 200)),
-        };
+    fn dismissal_stays_pending_until_the_frontend_confirms_the_popup_is_hidden() {
+        let mut state = PopupState::default();
+        state.mark_content_available();
+        state.update_bounds(Some(geometry(10, 20, 300, 200)));
 
-        state.expected_visible = false;
+        assert!(state.request_dismissal());
+        assert!(!state.request_dismissal());
         assert!(state.capture_is_paused());
 
-        state.bounds = None;
+        state.update_bounds(None);
         assert!(!state.capture_is_paused());
+        assert!(!state.dismissal_pending);
+    }
+
+    #[test]
+    fn entering_the_popup_cancels_a_pending_dismissal() {
+        let mut state = PopupState::default();
+        state.mark_content_available();
+        state.update_bounds(Some(geometry(10, 20, 300, 200)));
+        assert!(state.request_dismissal());
+
+        assert!(state.pointer_is_blocked((20, 30)));
+        assert!(!state.dismissal_pending);
+        assert!(state.request_dismissal());
     }
 
     fn lookup_input(capture_geometry: CaptureGeometry, target_available: bool) -> LookupInput {
