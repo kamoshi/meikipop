@@ -4,10 +4,12 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 
+use fast_image_resize::{FilterType, IntoImageView, ResizeAlg, ResizeOptions, Resizer};
 use hf_hub::{HFClientSync, split_id};
-use image::imageops::{FilterType, crop_imm, resize};
-use image::{GenericImageView, Rgb};
+use image::{GenericImageView, Rgb, RgbImage};
 use ndarray::{Array2, Array3, Array4, Axis, Ix2, Ix3, s};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use ort::ep::{self, ExecutionProvider};
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::value::Tensor;
 use unicode_general_category::GeneralCategory;
@@ -117,6 +119,58 @@ pub struct MeikiOcr {
     vrec_session: Session,
     pub active_provider: String,
     max_batch_size: usize,
+    image_resizer: Resizer,
+}
+
+type OcrSessions = (Session, Session, Session);
+
+fn create_sessions(
+    det_model_path: &PathBuf,
+    rec_model_path: &PathBuf,
+    vrec_model_path: &PathBuf,
+    use_cuda: bool,
+) -> MeikiResult<OcrSessions> {
+    Ok((
+        create_session(det_model_path, use_cuda)?,
+        create_session(rec_model_path, use_cuda)?,
+        create_session(vrec_model_path, use_cuda)?,
+    ))
+}
+
+fn create_session(path: &PathBuf, use_cuda: bool) -> MeikiResult<Session> {
+    let builder = Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .with_intra_op_spinning(false)?
+        .with_inter_op_spinning(false)?;
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    let builder = if use_cuda {
+        builder.with_execution_providers([ep::CUDA::default().build().error_on_failure()])?
+    } else {
+        builder
+    };
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    debug_assert!(!use_cuda, "CUDA is not supported on this platform");
+
+    let mut builder = builder;
+    Ok(builder.commit_from_file(path)?)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn cuda_is_available() -> bool {
+    match ep::CUDA::default().is_available() {
+        Ok(available) => available,
+        Err(error) => {
+            log::warn!("Could not query CUDA availability; using CPU: {error}");
+            false
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn cuda_is_available() -> bool {
+    false
 }
 
 impl MeikiOcr {
@@ -129,21 +183,27 @@ impl MeikiOcr {
         let rec_model_path = _get_model_path(REC_MODEL_REPO, REC_MODEL_NAME)?;
         let vrec_model_path = _get_model_path(REC_MODEL_REPO, VREC_MODEL_NAME)?;
 
-        // CPU is the guaranteed baseline. Additional execution providers can be
-        // registered here without changing the ported OCR pipeline below.
-        let active_provider = provider.unwrap_or("CPUExecutionProvider").to_owned();
-
-        let make_session = |path: &PathBuf| -> MeikiResult<Session> {
-            Ok(Session::builder()?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_op_spinning(false)?
-                .with_inter_op_spinning(false)?
-                .commit_from_file(path)?)
+        let prefer_cuda = provider != Some("CPUExecutionProvider");
+        let sessions = if prefer_cuda && cuda_is_available() {
+            match create_sessions(&det_model_path, &rec_model_path, &vrec_model_path, true) {
+                Ok(sessions) => Some((sessions, "CUDAExecutionProvider")),
+                Err(error) => {
+                    log::warn!("CUDA initialization failed; falling back to CPU: {error}");
+                    None
+                }
+            }
+        } else {
+            None
         };
 
-        let det_session = make_session(&det_model_path)?;
-        let rec_session = make_session(&rec_model_path)?;
-        let vrec_session = make_session(&vrec_model_path)?;
+        let ((det_session, rec_session, vrec_session), active_provider) = match sessions {
+            Some(sessions) => sessions,
+            None => (
+                create_sessions(&det_model_path, &rec_model_path, &vrec_model_path, false)?,
+                "CPUExecutionProvider",
+            ),
+        };
+        let active_provider = active_provider.to_owned();
 
         log::info!("meikiocr initialized on: {active_provider}; max_batch_size = {max_batch_size}");
 
@@ -153,6 +213,7 @@ impl MeikiOcr {
             vrec_session,
             active_provider,
             max_batch_size,
+            image_resizer: Resizer::new(),
         })
     }
 
@@ -279,7 +340,7 @@ impl MeikiOcr {
 
     // --- Internal methods ---
 
-    fn _preprocess_for_detection(&self, image: &Mat) -> MeikiResult<(Array4<f32>, f32)> {
+    fn _preprocess_for_detection(&mut self, image: &Mat) -> MeikiResult<(Array4<f32>, f32)> {
         let (w_orig, h_orig) = checked_image_dimensions(image)?;
         let scale =
             (INPUT_DET_WIDTH as f32 / w_orig as f32).min(INPUT_DET_HEIGHT as f32 / h_orig as f32);
@@ -290,7 +351,7 @@ impl MeikiOcr {
         if w_resized == 0 || h_resized == 0 {
             return Err("resized image dimensions must be greater than zero".into());
         }
-        let resized = resize(image, w_resized, h_resized, FilterType::Triangle);
+        let resized = resize_rgb(&mut self.image_resizer, image, w_resized, h_resized)?;
 
         let mut tensor = Array4::<f32>::zeros((1, 3, INPUT_DET_HEIGHT, INPUT_DET_WIDTH));
         copy_image_to_chw(&resized, tensor.index_axis_mut(Axis(0), 0));
@@ -423,7 +484,7 @@ impl MeikiOcr {
     }
 
     fn _preprocess_for_recognition(
-        &self,
+        &mut self,
         image: &Mat,
         text_boxes: &[TextBox],
         indices: &[usize],
@@ -438,14 +499,14 @@ impl MeikiOcr {
             if x2 <= x1 || y2 <= y1 {
                 continue;
             }
-            let crop = crop_imm(
+            let crop = fast_image_resize::images::CroppedImage::new(
                 image,
                 x1 as u32,
                 y1 as u32,
                 (x2 - x1) as u32,
                 (y2 - y1) as u32,
-            );
-            let (w, h) = crop.dimensions();
+            )?;
+            let (w, h) = ((x2 - x1) as u32, (y2 - y1) as u32);
 
             if !is_vertical {
                 let mut new_h = INPUT_REC_HEIGHT;
@@ -459,7 +520,8 @@ impl MeikiOcr {
                 }
 
                 tensors.push(resize_pad_to_chw(
-                    &*crop,
+                    &mut self.image_resizer,
+                    &crop,
                     new_w,
                     new_h,
                     INPUT_REC_WIDTH,
@@ -510,19 +572,20 @@ impl MeikiOcr {
                     if sy2 <= sy1 {
                         continue;
                     }
-                    let segment_crop = crop_imm(
+                    let segment_crop = fast_image_resize::images::CroppedImage::new(
                         image,
                         x1 as u32,
                         sy1 as u32,
                         (x2 - x1) as u32,
                         (sy2 - sy1) as u32,
-                    );
-                    let seg_h = segment_crop.height();
+                    )?;
+                    let seg_h = (sy2 - sy1) as u32;
 
                     let seg_new_h =
                         ((seg_h as f32 * scale).round_ties_even() as usize).min(max_h_scaled);
                     tensors.push(resize_pad_to_chw(
-                        &*segment_crop,
+                        &mut self.image_resizer,
+                        &segment_crop,
                         INPUT_VREC_WIDTH,
                         seg_new_h,
                         INPUT_VREC_WIDTH,
@@ -810,25 +873,37 @@ fn checked_image_dimensions(image: &Mat) -> MeikiResult<(u32, u32)> {
     Ok((width, height))
 }
 
-fn resize_pad_to_chw<I>(
-    source: &I,
+fn resize_rgb(
+    resizer: &mut Resizer,
+    source: &impl IntoImageView,
+    new_width: u32,
+    new_height: u32,
+) -> MeikiResult<RgbImage> {
+    let mut destination = RgbImage::new(new_width, new_height);
+    let options = ResizeOptions::new()
+        .resize_alg(ResizeAlg::Interpolation(FilterType::Bilinear))
+        .use_alpha(false);
+    resizer.resize(source, &mut destination, &options)?;
+    Ok(destination)
+}
+
+fn resize_pad_to_chw(
+    resizer: &mut Resizer,
+    source: &impl IntoImageView,
     new_w: usize,
     new_h: usize,
     target_w: usize,
     target_h: usize,
-) -> MeikiResult<Array3<f32>>
-where
-    I: GenericImageView<Pixel = Rgb<u8>>,
-{
+) -> MeikiResult<Array3<f32>> {
     if new_w == 0 || new_h == 0 {
         return Err("resized image dimensions must be greater than zero".into());
     }
-    let resized = resize(
+    let resized = resize_rgb(
+        resizer,
         source,
         u32::try_from(new_w)?,
         u32::try_from(new_h)?,
-        FilterType::Triangle,
-    );
+    )?;
     let mut tensor = Array3::<f32>::zeros((3, target_h, target_w));
     copy_image_to_chw(&resized, tensor.view_mut());
     Ok(tensor)
@@ -839,9 +914,10 @@ where
     I: GenericImageView<Pixel = Rgb<u8>>,
 {
     for (x, y, pixel) in image.pixels() {
-        for channel in 0..3 {
-            destination[[channel, y as usize, x as usize]] = pixel[channel] as f32 / 255.0;
-        }
+        // Match upstream's OpenCV input contract: the model tensor is BGR.
+        destination[[0, y as usize, x as usize]] = pixel[2] as f32 / 255.0;
+        destination[[1, y as usize, x as usize]] = pixel[1] as f32 / 255.0;
+        destination[[2, y as usize, x as usize]] = pixel[0] as f32 / 255.0;
     }
 }
 
@@ -890,18 +966,18 @@ mod tests {
     }
 
     #[test]
-    fn converts_rgb_to_normalized_chw_and_zero_pads() {
+    fn converts_rgb_to_normalized_bgr_chw_and_zero_pads() {
         let image = Mat::from_raw(2, 1, vec![255, 128, 0, 0, 64, 255]).unwrap();
 
-        let tensor = resize_pad_to_chw(&image, 2, 1, 3, 2).unwrap();
+        let tensor = resize_pad_to_chw(&mut Resizer::new(), &image, 2, 1, 3, 2).unwrap();
 
         assert_eq!(tensor.shape(), &[3, 2, 3]);
-        assert_eq!(tensor[[0, 0, 0]], 1.0);
+        assert_eq!(tensor[[0, 0, 0]], 0.0);
         assert_eq!(tensor[[1, 0, 0]], 128.0 / 255.0);
-        assert_eq!(tensor[[2, 0, 0]], 0.0);
-        assert_eq!(tensor[[0, 0, 1]], 0.0);
+        assert_eq!(tensor[[2, 0, 0]], 1.0);
+        assert_eq!(tensor[[0, 0, 1]], 1.0);
         assert_eq!(tensor[[1, 0, 1]], 64.0 / 255.0);
-        assert_eq!(tensor[[2, 0, 1]], 1.0);
+        assert_eq!(tensor[[2, 0, 1]], 0.0);
         assert_eq!(tensor[[0, 0, 2]], 0.0);
         assert_eq!(tensor[[2, 1, 2]], 0.0);
     }
