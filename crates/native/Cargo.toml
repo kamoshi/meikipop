@@ -31,6 +31,7 @@ ort = { version = "=2.0.0-rc.13", features = ["cuda"] }
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
 async-io = "2.6"
 pipewire = "0.10"
+x11rb = "0.13"
 zbus = "=5.19.0"
 zbus_macros = "=5.19.0"
 

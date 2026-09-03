@@ -3543,6 +3543,7 @@ dependencies = [
  "serde_json",
  "unicode-general-category",
  "ureq",
+ "x11rb",
  "zbus",
  "zbus_macros",
  "zip",

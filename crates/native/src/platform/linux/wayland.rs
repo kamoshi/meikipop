@@ -38,6 +38,7 @@ struct CaptureState {
     frame: Option<Frame>,
     frame_sequence: u64,
     pointer: Option<(i32, i32)>,
+    pointer_sequence: u64,
     error: Option<String>,
     stopped: bool,
 }
@@ -314,6 +315,7 @@ fn update_cursor(
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     state.pointer = Some((x, y));
+    state.pointer_sequence = state.pointer_sequence.wrapping_add(1);
     shared.changed.notify_all();
 }
 
@@ -559,16 +561,28 @@ pub struct WaylandPointerProvider {
     shared: Arc<SharedCapture>,
 }
 
-impl PointerProvider for WaylandPointerProvider {
-    fn snapshot(&mut self) -> Result<PointerSnapshot, Box<dyn Error>> {
+impl WaylandPointerProvider {
+    pub(super) fn pipewire_observation(&self) -> Option<((i32, i32), u64)> {
         let state = self
             .shared
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let position = state
-            .pointer
-            .ok_or("The Wayland screencast has not provided cursor metadata yet")?;
+        Some((state.pointer?, state.pointer_sequence))
+    }
+
+    pub(super) fn snapshot_with_position_override(
+        &self,
+        position_override: Option<(i32, i32)>,
+    ) -> Result<PointerSnapshot, Box<dyn Error>> {
+        let state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let position = position_override
+            .or(state.pointer)
+            .ok_or("Neither X11 nor the Wayland screencast provided cursor coordinates")?;
         let frame = state
             .frame
             .as_ref()
@@ -584,6 +598,12 @@ impl PointerProvider for WaylandPointerProvider {
             source_generation: 1,
             target_available: true,
         })
+    }
+}
+
+impl PointerProvider for WaylandPointerProvider {
+    fn snapshot(&mut self) -> Result<PointerSnapshot, Box<dyn Error>> {
+        self.snapshot_with_position_override(None)
     }
 }
 
