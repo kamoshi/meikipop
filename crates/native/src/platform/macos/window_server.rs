@@ -4,7 +4,7 @@ use objc2_core_graphics::{
     kCGNullWindowID, kCGWindowAlpha, kCGWindowBounds, kCGWindowNumber,
 };
 
-use crate::screenshot::interface::CaptureGeometry;
+use crate::platform::interface::CaptureGeometry;
 
 #[derive(Clone, Debug)]
 struct WindowSummary {
@@ -128,7 +128,7 @@ fn geometry_from_window_dictionary(dictionary: &CFDictionary) -> Option<CaptureG
 #[cfg(test)]
 mod tests {
     use super::{WindowListSnapshot, WindowSummary};
-    use crate::screenshot::interface::CaptureGeometry;
+    use crate::platform::interface::CaptureGeometry;
 
     fn window(id: u32, left: i32, top: i32, width: usize, height: usize) -> WindowSummary {
         WindowSummary {

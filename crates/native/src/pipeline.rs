@@ -8,12 +8,12 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::dictionary::lookup::{DictionaryEntry, KanjiEntry, LookupEngine};
-use crate::input::interface::{PointerProvider, PointerSnapshot};
 use crate::ocr::hit_scan::hit_scan;
 use crate::ocr::interface::{NormalizedPoint, Paragraph};
 use crate::ocr::ocr::{DEFAULT_PROVIDER_ID, OcrProcessor, OcrProviderInfo};
 use crate::platform::create_desktop_providers;
-use crate::screenshot::interface::{CaptureGeometry, CapturedFrame, FrameProvider};
+use crate::platform::interface::{CaptureGeometry, CapturedFrame, FrameProvider};
+use crate::platform::interface::{PointerProvider, PointerSnapshot};
 use crate::utils::latest_mailbox::{
     LatestMailbox, RecvTimeoutError as MailboxRecvTimeoutError, TryRecvError as MailboxTryRecvError,
 };
@@ -1123,7 +1123,7 @@ mod tests {
         recognized_frame_is_publishable, take_latest_command,
     };
     use crate::ocr::interface::NormalizedPoint;
-    use crate::screenshot::interface::{CaptureGeometry, CapturedFrame, Screenshot};
+    use crate::platform::interface::{CaptureGeometry, CapturedFrame, Screenshot};
 
     fn geometry(left: i32, top: i32, width: usize, height: usize) -> CaptureGeometry {
         CaptureGeometry {
@@ -1257,7 +1257,7 @@ mod tests {
                 },
                 geometry: geometry(10, 20, 100, 100),
             },
-            pointer: crate::input::interface::PointerSnapshot {
+            pointer: crate::platform::interface::PointerSnapshot {
                 position: (60, 70),
                 capture_geometry: Some(geometry(10, 20, 100, 100)),
                 source_generation: 1,
@@ -1277,7 +1277,7 @@ mod tests {
                 pixel_size: (1, 1),
                 geometry: geometry(10, 20, 100, 100),
             }),
-            latest_pointer: Some(crate::input::interface::PointerSnapshot {
+            latest_pointer: Some(crate::platform::interface::PointerSnapshot {
                 position: (60, 70),
                 capture_geometry: Some(geometry(10, 20, 100, 100)),
                 source_generation: 1,

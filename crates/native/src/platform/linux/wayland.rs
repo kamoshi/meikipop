@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::screenshot::interface::{CaptureGeometry, CapturedFrame, FrameProvider, Screenshot};
+use crate::platform::interface::{CaptureGeometry, CapturedFrame, FrameProvider, Screenshot};
 use ashpd::desktop::screencast::{
     CursorMode, Screencast, SelectSourcesOptions, SourceType, Stream,
 };
@@ -20,7 +20,7 @@ use pw::spa;
 use spa::buffer::meta::MetaCursor;
 use spa::pod::Pod;
 
-use crate::input::interface::{PointerProvider, PointerSnapshot};
+use crate::platform::interface::{PointerProvider, PointerSnapshot};
 
 #[derive(Clone)]
 struct Frame {

@@ -8,7 +8,7 @@ use fontdb::{Database, Family, Query};
 use meikipop_native::dictionary::lookup::{DictionaryEntry, KanjiEntry};
 use meikipop_native::ocr::ocr::DEFAULT_PROVIDER_ID;
 use meikipop_native::pipeline::{Pipeline, PipelineConfig, PipelineEvent, PipelineRuntimeConfig};
-use meikipop_native::screenshot::interface::CaptureGeometry;
+use meikipop_native::platform::interface::CaptureGeometry;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 mod logger;

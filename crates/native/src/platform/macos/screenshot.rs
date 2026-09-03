@@ -13,9 +13,10 @@ use screencapturekit::content_sharing_picker::{
 use screencapturekit::cv::CVPixelBufferLockFlags;
 use screencapturekit::prelude::*;
 
-use crate::platform::macos::SharedCaptureSource;
-use crate::platform::macos::window_server::query_window_geometry;
-use crate::screenshot::interface::{CaptureGeometry, CapturedFrame, FrameProvider, Screenshot};
+use crate::platform::interface::{CaptureGeometry, CapturedFrame, FrameProvider, Screenshot};
+
+use super::SharedCaptureSource;
+use super::window_server::query_window_geometry;
 
 const FRAME_TIMEOUT: Duration = Duration::from_millis(1500);
 
@@ -675,12 +676,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
+    use super::super::{CaptureSourceSnapshot, new_shared_capture_source};
     use super::{
         ScreenCaptureKitFrameProvider, SharedCapture, StreamState, frame_matches_pixel_size,
         pack_bgra, set_source_available,
     };
-    use crate::platform::macos::{CaptureSourceSnapshot, new_shared_capture_source};
-    use crate::screenshot::interface::{CaptureGeometry, CapturedFrame, Screenshot};
+    use crate::platform::interface::{CaptureGeometry, CapturedFrame, Screenshot};
 
     fn captured_frame(sequence: u64, width: usize, height: usize) -> CapturedFrame {
         CapturedFrame {

@@ -9,7 +9,7 @@ use std::time::Duration;
 use meikipop_native::dictionary::lookup::{DictionaryEntry, KanjiEntry, Sense};
 use meikipop_native::ocr::ocr::OcrProviderInfo;
 use meikipop_native::pipeline::{Pipeline, PipelineConfig, PipelineEvent, PipelineRuntimeConfig};
-use meikipop_native::screenshot::interface::CaptureGeometry;
+use meikipop_native::platform::interface::CaptureGeometry;
 use serde::{Deserialize, Serialize};
 
 const MAX_DICT_ENTRIES: usize = 10;

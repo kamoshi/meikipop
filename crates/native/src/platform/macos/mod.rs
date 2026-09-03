@@ -1,8 +1,27 @@
 use std::sync::{Arc, Mutex};
 
-use crate::screenshot::interface::CaptureGeometry;
+use crate::platform::interface::CaptureGeometry;
 
-pub(crate) mod window_server;
+mod input;
+mod screenshot;
+mod window_server;
+
+use super::DesktopProviders;
+use input::CoreGraphicsPointerProvider;
+use screenshot::ScreenCaptureKitFrameProvider;
+
+pub(super) fn create_desktop_providers(
+    _screencast_token: String,
+) -> Result<DesktopProviders, Box<dyn std::error::Error>> {
+    let source = new_shared_capture_source();
+    let frames = ScreenCaptureKitFrameProvider::new(source.clone())?;
+    let pointer = CoreGraphicsPointerProvider::new_with_source(source);
+
+    Ok(DesktopProviders {
+        frames: Box::new(frames),
+        pointer: Box::new(pointer),
+    })
+}
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CaptureSourceSnapshot {

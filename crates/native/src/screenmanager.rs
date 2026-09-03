@@ -1,9 +1,9 @@
-// meikipop/screenshot/screenmanager.rs
+// meikipop/screenmanager.rs
 
 use std::error::Error;
 use std::time::{Duration, Instant};
 
-use crate::screenshot::interface::{CaptureGeometry, FrameProvider, RgbImage, Screenshot};
+use crate::platform::interface::{CaptureGeometry, FrameProvider, RgbImage, Screenshot};
 
 #[derive(Clone, Debug)]
 pub struct ScreenManagerConfig {
@@ -181,7 +181,7 @@ impl<B: FrameProvider> ScreenManager<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screenshot::interface::CapturedFrame;
+    use crate::platform::interface::CapturedFrame;
     use std::collections::VecDeque;
 
     struct FakeFrameProvider {

@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 
 use objc2_core_graphics::{CGEvent, CGEventSource, CGEventSourceStateID};
 
-use crate::input::interface::{PointerProvider, PointerSnapshot};
-use crate::platform::macos::SharedCaptureSource;
-use crate::platform::macos::window_server::WindowListSnapshot;
+use super::SharedCaptureSource;
+use super::window_server::WindowListSnapshot;
+use crate::platform::interface::{PointerProvider, PointerSnapshot};
 
 const WINDOW_LIST_CACHE_DURATION: Duration = Duration::from_millis(50);
 
