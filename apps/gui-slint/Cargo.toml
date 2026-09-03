@@ -17,10 +17,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+raw-window-handle = "0.6"
 slint = { version = "=1.17.0", default-features = false, features = [
     "backend-winit-x11",
+    "raw-window-handle-06",
     "renderer-skia",
 ] }
+x11rb = "0.13"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 slint = { version = "=1.17.0", default-features = false, features = [

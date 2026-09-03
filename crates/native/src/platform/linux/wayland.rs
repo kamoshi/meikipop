@@ -38,7 +38,7 @@ struct CaptureState {
     frame: Option<Frame>,
     frame_sequence: u64,
     pointer: Option<(i32, i32)>,
-    pointer_sequence: u64,
+    pointer_updated_at: Option<Instant>,
     error: Option<String>,
     stopped: bool,
 }
@@ -315,7 +315,7 @@ fn update_cursor(
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     state.pointer = Some((x, y));
-    state.pointer_sequence = state.pointer_sequence.wrapping_add(1);
+    state.pointer_updated_at = Some(Instant::now());
     shared.changed.notify_all();
 }
 
@@ -562,13 +562,13 @@ pub struct WaylandPointerProvider {
 }
 
 impl WaylandPointerProvider {
-    pub(super) fn pipewire_observation(&self) -> Option<((i32, i32), u64)> {
+    pub(super) fn pipewire_observation(&self) -> Option<((i32, i32), Instant)> {
         let state = self
             .shared
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        Some((state.pointer?, state.pointer_sequence))
+        Some((state.pointer?, state.pointer_updated_at?))
     }
 
     pub(super) fn snapshot_with_position_override(

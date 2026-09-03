@@ -12,6 +12,9 @@ use meikipop_native::platform::interface::CaptureGeometry;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 mod logger;
+mod window_focus;
+
+use window_focus::PopupFocusControl;
 
 slint::include_modules!();
 
@@ -83,6 +86,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // reliably after the window has been mapped once.
     popup.show()?;
     popup.hide()?;
+    let focus_control = Rc::new(PopupFocusControl::new(&popup));
 
     tray.on_quit(|| {
         let _ = slint::quit_event_loop();
@@ -134,14 +138,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    let popup_weak = popup.as_weak();
-    let tray_weak = tray.as_weak();
     let pipeline_for_updates = Rc::clone(&pipeline);
     let runtime_config_for_updates = Rc::clone(&runtime_config);
     let hide_timer = Rc::new(slint::Timer::default());
     let hide_timer_for_updates = Rc::clone(&hide_timer);
+    let popup_weak = popup.as_weak();
+    let tray_weak = tray.as_weak();
     let popup_bounds = Rc::new(RefCell::new(None));
     let popup_bounds_for_updates = Rc::clone(&popup_bounds);
+    let focus_control_for_updates = Rc::clone(&focus_control);
     let update_timer = slint::Timer::default();
     update_timer.start(
         slint::TimerMode::Repeated,
@@ -154,6 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &runtime_config_for_updates,
                 &hide_timer_for_updates,
                 &popup_bounds_for_updates,
+                &focus_control_for_updates,
             )
         },
     );
@@ -206,6 +212,7 @@ fn process_pipeline_events(
     runtime_config: &Rc<RefCell<PipelineRuntimeConfig>>,
     hide_timer: &Rc<slint::Timer>,
     popup_bounds: &Rc<RefCell<Option<PopupBounds>>>,
+    focus_control: &Rc<PopupFocusControl>,
 ) {
     while let Some(event) = pipeline.borrow().try_recv() {
         match event {
@@ -289,6 +296,7 @@ fn process_pipeline_events(
 
                 popup.set_has_error(false);
                 popup.set_scroll_y(0.0);
+                focus_control.prepare_show(&popup);
                 let _ = popup.show();
 
                 let scale_factor = popup.window().scale_factor();
@@ -363,6 +371,7 @@ fn process_pipeline_events(
                 popup.set_has_error(true);
                 popup.set_error_text(error.into());
                 popup.set_scroll_y(0.0);
+                focus_control.prepare_show(&popup);
                 let _ = popup.show();
                 popup
                     .window()
