@@ -1,20 +1,21 @@
-# meikipop - universal japanese ocr popup dictionary
+# MeikiPop - Universal Japanese OCR Popup Dictionary
 
-instantly look up japanese words anywhere on your screen. meikipop uses optical character recognition (ocr) to read text from websites, games, scanned manga, or even hard-coded video subtitles, giving you effortless dictionary lookups with the press of a key (or even without)!
+Instantly look up Japanese words anywhere on your screen. MeikiPop uses optical character recognition (OCR) to read text from websites, games, scanned manga, and even hard-coded video subtitles, providing effortless dictionary lookups with the press of a key - or without one.
+
+This project is a Rust fork and rewrite of the [original MeikiPop](https://github.com/rtr46/meikipop), with an emphasis on robust native support for macOS and Linux under Wayland.
 
 https://github.com/user-attachments/assets/a1834197-3059-438c-a2dc-716e8ec9078f
 
 
 
-## features
+## Features
 
-*   **works everywhere:** if you can see it on your screen, you can look it up. no more limitations of browser extensions, hooks or application-specific tools.
-*   **ocr-powered:** reads japanese text directly from images, making it perfect for games, comics, and videos.
-*   **blazingly fast:** the dictionary is pre-processed into a highly optimized format for instant lookups. the ui is designed to be lightweight and responsive.
-*   **simple & intuitive:** just point your mouse and press a hotkey. that's it.
-*   **highly customizable:** change the hotkey, theme, colors, and layout to create your perfect reading experience.
-*   **region or fullscreen:** scan your entire screen or select a specific region (like a game window or manga page) to improve performance.
-*   **pluggable ocr backend:** lets you choose whatever ocr suits you best. whether you want the highest accuracy remote ocr, that runs great even on low-end hardware or you want blazingly fast and private local ocr.
+- **Works across applications:** Look up Japanese text in native Wayland and XWayland windows, as well as macOS applications. MeikiPop uses the system's screen-capture facilities, so no browser extensions, hooks, or application-specific integrations are required.
+- **OCR-powered:** Reads Japanese text directly from images, making it useful for games, comics, videos, websites, and other applications.
+- **Fast dictionary lookups:** The dictionary is preprocessed into an optimized format for responsive lookups.
+- **Simple and intuitive:** Select a capture source, then point your cursor at Japanese text to display its dictionary entries.
+- **Multiple OCR backends:** Includes the local MeikiOCR backend and Apple Vision on macOS.
+
 
 ## philosophy & limitations
 
