@@ -6,7 +6,22 @@ This project is a Rust fork and rewrite of the [original MeikiPop](https://githu
 
 https://github.com/user-attachments/assets/a1834197-3059-438c-a2dc-716e8ec9078f
 
+## Platform support
 
+| OS              | Supported |
+| --------------- | :-------: |
+| Linux (Wayland) | ✅        |
+| Linux (X11)     | ❌         |
+| macOS (14.0+)   | ✅        |
+| Windows         | ❌         |
+
+On Linux, we can use the XDG Desktop Portal to select a screen or window, then
+receives frames and cursor metadata directly through PipeWire. A Wayland portal
+implementation with cursor-metadata support is required.
+
+On macOS, we can use ScreenCaptureKit for native source selection and screen
+capture, and Core Graphics for pointer and window information. OCR can run
+locally with MeikiOCR or, in theory, use Apple's Vision framework.
 
 ## Features
 
@@ -58,36 +73,6 @@ cd meikipop
 pip install -e .
 meikipop  # run the application
 ```
-
-### platform support
-
-* **windows, linux (x11)** - these are the primary supported platforms
-* **macos** - supported thanks to community contributions
-* **linux (wayland)** - it can work in principle thanks to community contributions, but may require additional trouble shooting
-
-see for platform specific setup details:
-<details>
-<summary>macos</summary>
-
-* go to **System Preferences** > **Security & Privacy** > **Privacy**
-* add/enable your terminal app in **Input Monitoring**, **Screen Recording** and **Accessibility**
-
-note that there may be problems when using python 3.14. use one of [these workarounds](https://github.com/rtr46/meikipop/issues/43) if necessary.
-</details>
-
-<details>
-<summary>wayland (alpha)</summary>
-
-it is possible to run meikipop on wayland in principle, but depending on your specific setup you may need to take additional steps like installing additional dependencies, fixing some of the wayland specific code or changing some of your setup. since the wayland eco system is terribly fragmented and deliberately prevents apps like meikipop from working natively, don't expect any support, but feel free to open an issue regardless.
-
-The native Linux backend uses the XDG ScreenCast portal and PipeWire directly.
-It requires a portal implementation that supports cursor metadata, such as the
-current KDE/KWin and GNOME/Mutter implementations. XWayland is not required for
-screen capture or cursor tracking.
-
-Install the PipeWire development package when building from source (typically
-`pipewire-devel` on Fedora or `libpipewire-0.3-dev` on Ubuntu).
-</details>
 
 ## how to use
 
