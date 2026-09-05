@@ -12,6 +12,7 @@ use meikipop_native::platform::interface::CaptureGeometry;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 mod logger;
+mod setup_tray;
 mod window_focus;
 
 use window_focus::PopupFocusControl;
@@ -88,9 +89,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     popup.hide()?;
     let focus_control = Rc::new(PopupFocusControl::new(&popup));
 
-    tray.on_quit(|| {
-        let _ = slint::quit_event_loop();
-    });
+    let settings = SettingsWindow::new()?;
+
+    setup_tray::setup_tray(&tray, settings.as_weak());
 
     let pipeline_for_screen_choice = Rc::clone(&pipeline);
     let runtime_config_for_screen_choice = Rc::clone(&runtime_config);
@@ -125,7 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let pipeline_for_provider_choice = Rc::clone(&pipeline);
     let runtime_config_for_provider_choice = Rc::clone(&runtime_config);
-    tray.on_choose_ocr_provider(move |provider_id| {
+    tray.on_choose_provider(move |provider_id| {
         let config = PipelineRuntimeConfig {
             ocr_provider: provider_id.to_string(),
         };
@@ -235,7 +236,7 @@ fn process_pipeline_events(
                 }
                 runtime_config.borrow_mut().ocr_provider = active_provider.clone();
                 if let Some(tray) = tray_weak.upgrade() {
-                    tray.set_ocr_providers(ModelRc::new(VecModel::from(
+                    tray.set_providers(ModelRc::new(VecModel::from(
                         providers
                             .into_iter()
                             .map(|provider| OcrProviderOption {
@@ -244,7 +245,7 @@ fn process_pipeline_events(
                             })
                             .collect::<Vec<_>>(),
                     )));
-                    tray.set_active_ocr_provider(active_provider.into());
+                    tray.set_selected_provider(active_provider.into());
                 }
             }
             PipelineEvent::LookupResult {

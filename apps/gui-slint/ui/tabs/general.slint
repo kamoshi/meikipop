@@ -1,0 +1,25 @@
+import { ComboBox } from "std-widgets.slint";
+
+export component SettingsTabGeneral inherits VerticalLayout {
+    in property <[string]> providers;
+
+    in-out property <string> selected-provider <=> provider-box.current-value;
+
+    padding: 16px;
+    spacing: 12px;
+    alignment: start;
+
+    HorizontalLayout {
+        spacing: 12px;
+
+        Text {
+            text: "OCR Provider:";
+            vertical-alignment: center;
+        }
+
+        provider-box := ComboBox {
+            model: root.providers;
+            width: 180px;
+        }
+    }
+}

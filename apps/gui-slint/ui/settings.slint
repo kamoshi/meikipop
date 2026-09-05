@@ -1,0 +1,63 @@
+import { SettingsTabContent } from "./tabs/content.slint";
+import { SettingsTabGeneral } from "./tabs/general.slint";
+import { SettingsTabAppearance } from "./tabs/appearance.slint";
+import { TabWidget, Button } from "std-widgets.slint";
+
+export component SettingsWindow inherits Window {
+    title: "Settings";
+    preferred-width: 520px;
+    preferred-height: 420px;
+
+    callback save();
+    callback cancel();
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+
+        TabWidget {
+            Tab {
+                title: "General";
+                VerticalLayout {
+                    padding: 16px;
+
+                    tab-general := SettingsTabGeneral { }
+                }
+            }
+
+            Tab {
+                title: "Popup Content";
+                VerticalLayout {
+                    padding: 16px;
+
+                    tab-content := SettingsTabContent { }
+                }
+            }
+
+            Tab {
+                title: "Appearance";
+                VerticalLayout {
+                    padding: 16px;
+
+                    tab-appearance := SettingsTabAppearance { }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+
+            Button {
+                text: "Cancel";
+                clicked => { root.cancel(); }
+            }
+
+            Button {
+                text: "Save";
+                primary: true;
+                clicked => { root.save(); }
+            }
+        }
+    }
+}

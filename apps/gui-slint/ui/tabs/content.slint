@@ -1,0 +1,20 @@
+import { CheckBox } from "std-widgets.slint";
+
+export component SettingsTabContent inherits VerticalLayout {
+    in-out property <bool> show-kanji-entries: true;
+    in-out property <bool> show-examples: true;
+
+    padding: 16px;
+    spacing: 12px;
+    alignment: start;
+
+    CheckBox {
+        text: "Show Kanji Entries";
+        checked <=> root.show-kanji-entries;
+    }
+
+    CheckBox {
+        text: "Show Examples";
+        checked <=> root.show-examples;
+    }
+}

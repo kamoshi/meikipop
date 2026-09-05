@@ -1,4 +1,5 @@
-export { OcrPopup, FormattedEntry } from "popup.slint";
+export { SettingsWindow }from "settings.slint";
+export { OcrPopup, FormattedEntry }from "popup.slint";
 
 export struct OcrProviderOption {
     id: string,
@@ -6,35 +7,58 @@ export struct OcrProviderOption {
 }
 
 export component MeikiPopTray inherits SystemTrayIcon {
-    icon: @image-url("../../../resources/icon.ico");
-    tooltip: "MeikiPop";
+    in-out property <bool> is-paused: false;
+    in-out property <string> selected-provider: "meikiocr";
+    in-out property <string> selected-scan-mode: "auto";
 
-    in property <[OcrProviderOption]> ocr-providers;
-    in property <string> active-ocr-provider;
+    in property <[OcrProviderOption]> providers;
 
+    callback show-settings();
     callback quit();
     callback choose-screen();
-    callback choose-ocr-provider(string);
+    callback choose-provider(string);
+    callback choose-scan-mode(string);
+
+    tooltip: "Meikipop";
+    icon: root.is-paused
+        ? @image-url("../../../resources/icon.inactive.ico")
+        : @image-url("../../../resources/icon.ico");
 
     Menu {
         MenuItem {
-            title: "Choose screen";
-            activated => { choose-screen(); }
+            title: "Settings";
+            activated => { root.show-settings(); }
         }
+
+        MenuItem {
+            title: "Choose screen";
+            activated => { root.choose-screen(); }
+        }
+
         Menu {
             title: "Choose provider";
 
-            for provider in ocr-providers: MenuItem {
+            for provider in providers: MenuItem {
                 title: provider.name;
                 checkable: true;
-                checked: provider.id == active-ocr-provider;
-                activated => { choose-ocr-provider(provider.id); }
+                checked: provider.id == selected-provider;
+                activated => { choose-provider(provider.id); }
             }
         }
+
         MenuSeparator { }
+
+        MenuItem {
+            title: "Pause meikipop";
+            checkable: true;
+            checked <=> root.is-paused;
+        }
+
+        MenuSeparator { }
+
         MenuItem {
             title: "Quit";
-            activated => { quit(); }
+            activated => { root.quit(); }
         }
     }
 }

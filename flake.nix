@@ -26,11 +26,12 @@
         '')
 
         # Native-extension and general development tools.
+        pkgs.pkg-config
+        pkgs.openssl.dev
+
         unstablePkgs.cargo
         unstablePkgs.clippy
-        pkgs.openssl.dev
-        pkgs.pkg-config
-        pkgs.rust-analyzer
+        unstablePkgs.rust-analyzer
         unstablePkgs.rustc
         unstablePkgs.rustfmt
       ];
@@ -61,14 +62,16 @@
           shellHook = ''
             export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
             export BINDGEN_EXTRA_CLANG_ARGS="-I${pkgs.stdenv.cc.libc.dev}/include ''${BINDGEN_EXTRA_CLANG_ARGS:-}"
-            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
-              pkgs.libxkbcommon
-              pkgs.wayland
-              pkgs.xorg.libX11
-              pkgs.xorg.libXcursor
-              pkgs.xorg.libXi
-              pkgs.xorg.libxcb
-            ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LD_LIBRARY_PATH="${
+              pkgs.lib.makeLibraryPath [
+                pkgs.libxkbcommon
+                pkgs.wayland
+                pkgs.xorg.libX11
+                pkgs.xorg.libXcursor
+                pkgs.xorg.libXi
+                pkgs.xorg.libxcb
+              ]
+            }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             echo "meikipop development shell (Linux)"
             echo "  Run: meikipop"
