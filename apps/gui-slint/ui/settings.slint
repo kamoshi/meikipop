@@ -1,47 +1,79 @@
 import { SettingsTabContent } from "./tabs/content.slint";
 import { SettingsTabGeneral } from "./tabs/general.slint";
 import { SettingsTabAppearance } from "./tabs/appearance.slint";
-import { TabWidget, Button } from "std-widgets.slint";
+import { InfoDialog } from "./components/info_dialog.slint";
+import { TabWidget, Button, ScrollView } from "std-widgets.slint";
 
 export component SettingsWindow inherits Window {
     title: "Settings";
+    icon: @image-url("../../../resources/icon.ico");
+    min-width: 520px;
+    min-height: 420px;
     preferred-width: 520px;
     preferred-height: 420px;
 
+    in property <length> label-width: 200px;
+
     callback save();
     callback cancel();
+    callback change-hotkey();
+    callback hotkey-held(bool);
+
+    in-out property <string> hotkey <=> tab-general.hotkey;
+    in-out property <string> selected-provider <=> tab-general.selected-provider;
+    in-out property <int> max-lookup-length <=> tab-general.max-lookup-length;
+    in-out property <bool> auto-scan <=> tab-general.auto-scan;
+    in-out property <bool> auto-scan-on-mouse-move <=> tab-general.auto-scan-on-mouse-move;
+    in-out property <int> auto-scan-interval-milliseconds <=> tab-general.auto-scan-interval-milliseconds;
+    in-out property <bool> show-popup-without-hotkey <=> tab-general.show-popup-without-hotkey;
+    in-out property <bool> show-hotkey-portal-notice: false;
 
     VerticalLayout {
         padding: 16px;
         spacing: 12px;
 
         TabWidget {
+            vertical-stretch: 1;
+
             Tab {
                 title: "General";
-                VerticalLayout {
-                    padding: 16px;
+                ScrollView {
+                    horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                    viewport-width: self.visible-width;
+                    viewport-height: tab-general.preferred-height;
 
-                    tab-general := SettingsTabGeneral { }
+                    tab-general := SettingsTabGeneral {
+                        label-width: root.label-width;
+                        change-hotkey => { root.change-hotkey(); }
+                    }
                 }
             }
 
-            Tab {
-                title: "Popup Content";
-                VerticalLayout {
-                    padding: 16px;
+            // Tab {
+            //     title: "Popup Content";
+            //     ScrollView {
+            //         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+            //         viewport-width: self.visible-width;
+            //         viewport-height: tab-content.preferred-height;
 
-                    tab-content := SettingsTabContent { }
-                }
-            }
+            //         tab-content := SettingsTabContent {
+            //             label-width: root.label-width;
+            //         }
+            //     }
+            // }
 
-            Tab {
-                title: "Appearance";
-                VerticalLayout {
-                    padding: 16px;
+            // Tab {
+            //     title: "Appearance";
+            //     ScrollView {
+            //         horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+            //         viewport-width: self.visible-width;
+            //         viewport-height: tab-appearance.preferred-height;
 
-                    tab-appearance := SettingsTabAppearance { }
-                }
-            }
+            //         tab-appearance := SettingsTabAppearance {
+            //             label-width: root.label-width;
+            //         }
+            //     }
+            // }
         }
 
         HorizontalLayout {
@@ -59,5 +91,15 @@ export component SettingsWindow inherits Window {
                 clicked => { root.save(); }
             }
         }
+    }
+
+    if root.show-hotkey-portal-notice: InfoDialog {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        title: "Change shortcut in System Settings";
+        message: "Your desktop portal cannot edit an existing shortcut from this app. Open System Settings → Keyboard → Shortcuts and change MeikiPop’s ‘Scan Text Under Cursor’ shortcut there.";
+        dismissed => { root.show-hotkey-portal-notice = false; }
     }
 }

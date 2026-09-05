@@ -1,20 +1,76 @@
-import { CheckBox } from "std-widgets.slint";
+import { CheckBox, GroupBox } from "std-widgets.slint";
 
 export component SettingsTabContent inherits VerticalLayout {
+    in property <length> label-width: 200px;
+
+    in-out property <bool> show-all-glosses: false;
+    in-out property <bool> show-deconjugation: false;
+    in-out property <bool> show-part-of-speech: false;
+    in-out property <bool> show-tags: false;
+    in-out property <bool> show-frequency: false;
     in-out property <bool> show-kanji-entries: true;
     in-out property <bool> show-examples: true;
+    in-out property <bool> show-components: true;
 
     padding: 16px;
     spacing: 12px;
     alignment: start;
 
-    CheckBox {
-        text: "Show Kanji Entries";
-        checked <=> root.show-kanji-entries;
+    GroupBox {
+        enabled: false;
+        title: "Vocab Entry Content";
+        content-padding: 1rem;
+        VerticalLayout {
+            spacing: 1rem;
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Show All Glosses:"; width: root.label-width; vertical-alignment: center; }
+                HorizontalLayout { alignment: start; horizontal-stretch: 1; CheckBox { checked <=> root.show-all-glosses; } }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Show Deconjugation:"; width: root.label-width; vertical-alignment: center; }
+                HorizontalLayout { alignment: start; horizontal-stretch: 1; CheckBox { checked <=> root.show-deconjugation; } }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Show Part of Speech:"; width: root.label-width; vertical-alignment: center; }
+                HorizontalLayout { alignment: start; horizontal-stretch: 1; CheckBox { checked <=> root.show-part-of-speech; } }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Show Tags:"; width: root.label-width; vertical-alignment: center; }
+                HorizontalLayout { alignment: start; horizontal-stretch: 1; CheckBox { checked <=> root.show-tags; } }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Show Frequency:"; width: root.label-width; vertical-alignment: center; }
+                HorizontalLayout { alignment: start; horizontal-stretch: 1; CheckBox { checked <=> root.show-frequency; } }
+            }
+        }
     }
 
-    CheckBox {
-        text: "Show Examples";
-        checked <=> root.show-examples;
+    GroupBox {
+        enabled: false;
+        title: "Kanji Entry Content";
+        content-padding: 1rem;
+        VerticalLayout {
+            spacing: 1rem;
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Show Kanji Entries:"; width: root.label-width; vertical-alignment: center; }
+                HorizontalLayout { alignment: start; horizontal-stretch: 1; CheckBox { checked <=> root.show-kanji-entries; } }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Show Examples:"; width: root.label-width; vertical-alignment: center; }
+                HorizontalLayout { alignment: start; horizontal-stretch: 1; CheckBox { checked <=> root.show-examples; } }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Show Components:"; width: root.label-width; vertical-alignment: center; }
+                HorizontalLayout { alignment: start; horizontal-stretch: 1; CheckBox { checked <=> root.show-components; } }
+            }
+        }
     }
 }

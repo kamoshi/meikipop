@@ -3,6 +3,7 @@
 NIX := nix develop -c
 CARGO := $(NIX) cargo
 HOST_OS := $(shell uname -s)
+HOST_ARCH := $(shell uname -m)
 
 ifeq ($(HOST_OS),Darwin)
 SWIFT := swift
@@ -23,19 +24,20 @@ PLATFORM_BUILD_TARGETS :=
 PLATFORM_CHECK_TARGETS :=
 endif
 
-.PHONY: help run run-slint run-swift build build-native build-native-ffi build-slint \
+.PHONY: help run run-slint run-slint-cuda run-swift build build-native build-native-ffi build-slint \
 	build-swift check check-native check-native-ffi check-slint check-swift test \
 	test-native test-native-ffi
 
 help:
 	@echo "MeikiPop development commands"
 	@echo
-	@echo "  make run           Run the Slint frontend"
-	@echo "  make run-slint     Run the Slint frontend"
-	@echo "  make run-swift     Run the Swift frontend (macOS only)"
-	@echo "  make build         Build all frontends supported on this OS"
-	@echo "  make check         Check all frontends supported on this OS"
-	@echo "  make test          Run the native test suite"
+	@echo "  make run            Run the Slint frontend"
+	@echo "  make run-slint      Run the Slint frontend"
+	@echo "  make run-slint-cuda Run the Slint frontend with the optional CUDA runtime (x86_64 Linux)"
+	@echo "  make run-swift      Run the Swift frontend (macOS only)"
+	@echo "  make build          Build all frontends supported on this OS"
+	@echo "  make check          Check all frontends supported on this OS"
+	@echo "  make test           Run the native test suite"
 	@echo
 	@echo "Component targets: build-{native,native-ffi,slint,swift}"
 	@echo "                   check-{native,native-ffi,slint,swift}"
@@ -44,6 +46,21 @@ run: run-slint
 
 run-slint:
 	$(CARGO) run --release --manifest-path $(SLINT_MANIFEST)
+
+ifeq ($(HOST_OS),Linux)
+ifeq ($(HOST_ARCH),x86_64)
+run-slint-cuda:
+	nix develop .#cuda -c cargo run --release --manifest-path $(SLINT_MANIFEST)
+else
+run-slint-cuda:
+	@echo "CUDA is only supported by the optional x86_64 Linux development shell."
+	@false
+endif
+else
+run-slint-cuda:
+	@echo "CUDA is only supported by the optional x86_64 Linux development shell."
+	@false
+endif
 
 ifeq ($(HOST_OS),Darwin)
 run-swift:

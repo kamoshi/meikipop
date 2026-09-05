@@ -1,0 +1,57 @@
+import { Button } from "std-widgets.slint";
+
+// A reusable in-window modal information dialog. Its parent controls when it
+// exists; `dismissed` lets the parent hide it without coupling this component
+// to any particular state property.
+export component InfoDialog inherits Rectangle {
+    in property <string> title;
+    in property <string> message;
+    callback dismissed();
+
+    background: #00000088;
+
+    // Consume clicks on the dimmed backdrop so controls behind this modal
+    // cannot be activated.
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { }
+    }
+
+    Rectangle {
+        width: min(420px, parent.width - 32px);
+        height: 185px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: #303030;
+        border-color: #666666;
+        border-width: 1px;
+        border-radius: 8px;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            Text {
+                text: root.title;
+                font-size: 17px;
+                font-weight: 700;
+            }
+
+            Text {
+                text: root.message;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "OK";
+                    primary: true;
+                    clicked => { root.dismissed(); }
+                }
+            }
+        }
+    }
+}

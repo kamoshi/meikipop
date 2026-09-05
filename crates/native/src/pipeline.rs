@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -24,12 +24,22 @@ const OCR_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PipelineRuntimeConfig {
     pub ocr_provider: String,
+    pub max_lookup_length: usize,
+    pub auto_scan: bool,
+    pub auto_scan_on_mouse_move: bool,
+    pub auto_scan_cooldown: Duration,
+    pub show_popup_without_hotkey: bool,
 }
 
 impl Default for PipelineRuntimeConfig {
     fn default() -> Self {
         Self {
             ocr_provider: DEFAULT_PROVIDER_ID.to_owned(),
+            max_lookup_length: 25,
+            auto_scan: true,
+            auto_scan_on_mouse_move: true,
+            auto_scan_cooldown: Duration::from_millis(500),
+            show_popup_without_hotkey: true,
         }
     }
 }
@@ -38,7 +48,6 @@ pub struct PipelineConfig {
     pub dictionary_path: PathBuf,
     pub screencast_token_path: PathBuf,
     pub max_dict_entries: usize,
-    pub max_lookup_length: usize,
     pub show_kanji: bool,
     pub capture_interval: Duration,
     pub runtime: PipelineRuntimeConfig,
@@ -53,6 +62,7 @@ pub enum PipelineEvent {
         error: Option<String>,
     },
     LookupResult {
+        scan_generation: u64,
         entries: Vec<DictionaryEntry>,
         kanji: Option<KanjiEntry>,
         mouse_x: i32,
@@ -68,6 +78,7 @@ pub enum PipelineEvent {
 
 pub struct Pipeline {
     event_receiver: Receiver<PipelineEvent>,
+    event_sender: Sender<PipelineEvent>,
     shared: SharedPipelineState,
     command_sender: Sender<PipelineCommand>,
     coordinator: Option<JoinHandle<()>>,
@@ -78,6 +89,8 @@ type SharedPopupState = Arc<Mutex<PopupState>>;
 #[derive(Clone)]
 struct SharedPipelineState {
     running: Arc<AtomicBool>,
+    hotkey_held: Arc<AtomicBool>,
+    scan_generation: Arc<AtomicU64>,
     popup: SharedPopupState,
     freshness: SharedFreshness,
 }
@@ -107,6 +120,7 @@ struct ConfigRevision(u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ScanRevision {
     config: ConfigRevision,
+    scan_generation: u64,
     source_generation: u64,
     frame_sequence: u64,
     scan_sequence: u64,
@@ -241,9 +255,12 @@ impl Pipeline {
         + 'static,
     ) -> Result<Self, std::io::Error> {
         let (event_sender, event_receiver) = crossbeam_channel::unbounded();
+        let runner_event_sender = event_sender.clone();
         let (command_sender, command_receiver) = crossbeam_channel::unbounded();
         let shared = SharedPipelineState {
             running: Arc::new(AtomicBool::new(true)),
+            hotkey_held: Arc::new(AtomicBool::new(false)),
+            scan_generation: Arc::new(AtomicU64::new(0)),
             popup: Arc::new(Mutex::new(PopupState::default())),
             freshness: Arc::new(Mutex::new(FreshnessState {
                 config_revision: ConfigRevision::default(),
@@ -259,13 +276,14 @@ impl Pipeline {
             thread::Builder::new()
                 .name("PipelineInit".to_owned())
                 .spawn(move || {
-                    runner(shared, command_receiver, event_sender);
+                    runner(shared, command_receiver, runner_event_sender);
                     running.store(false, Ordering::Release);
                 })?
         };
 
         Ok(Self {
             event_receiver,
+            event_sender,
             shared,
             command_sender,
             coordinator: Some(coordinator),
@@ -274,6 +292,43 @@ impl Pipeline {
 
     pub fn try_recv(&self) -> Option<PipelineEvent> {
         self.event_receiver.try_recv().ok()
+    }
+
+    /// Enables manual scanning while the registered global shortcut is held.
+    pub fn set_hotkey_held(&self, held: bool) {
+        if self.shared.hotkey_held.swap(held, Ordering::AcqRel) == held {
+            return;
+        }
+        let auto_scan = self
+            .shared
+            .freshness
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .desired_runtime
+            .auto_scan;
+        if !auto_scan {
+            self.shared.scan_generation.fetch_add(1, Ordering::AcqRel);
+        }
+        if !held && !auto_scan {
+            let mut freshness = self
+                .shared
+                .freshness
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            freshness.latest_frame = None;
+            freshness.latest_lookup_revision = freshness.latest_lookup_revision.wrapping_add(1);
+            drop(freshness);
+        }
+        if !held && !popup_is_allowed(&self.shared) {
+            hide_popup_if_visible(&self.event_sender, &self.shared.popup, 0, 0);
+        }
+    }
+
+    /// Final frontend-side guard against a result racing with release or a
+    /// popup-visibility policy change after the worker published it.
+    pub fn accepts_lookup_result(&self, scan_generation: u64) -> bool {
+        scan_generation == self.shared.scan_generation.load(Ordering::Acquire)
+            && popup_is_allowed(&self.shared)
     }
 
     /// Reports the popup's global desktop bounds. While present, capture is
@@ -327,6 +382,8 @@ impl Drop for Pipeline {
 
 struct LookupRequest {
     revision: u64,
+    scan_generation: u64,
+    max_lookup_length: usize,
     lookup_string: Option<String>,
     mouse_x: i32,
     mouse_y: i32,
@@ -341,11 +398,13 @@ struct LookupInput {
     source_generation: u64,
     ocr_sequence: Option<u64>,
     pointer_blocked_by_popup: bool,
+    popup_allowed: bool,
 }
 
 struct OcrWorkItem {
     frame: CapturedFrame,
     pointer: PointerSnapshot,
+    scan_generation: u64,
 }
 
 /// Limits expensive provider calls without slowing capture, cached-result reuse,
@@ -411,17 +470,22 @@ impl Drop for StopPipelineOnDrop {
 fn ocr_work_is_current(
     work: &OcrWorkItem,
     config_revision: ConfigRevision,
-    freshness: &SharedFreshness,
+    shared: &SharedPipelineState,
 ) -> bool {
     let (config_matches, latest_frame, latest_pointer) = {
-        let state = freshness.lock().unwrap_or_else(|error| error.into_inner());
+        let state = shared
+            .freshness
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         (
             state.config_revision == config_revision,
             state.latest_frame.clone(),
             state.latest_pointer.clone(),
         )
     };
-    config_matches
+    work.scan_generation == shared.scan_generation.load(Ordering::Acquire)
+        && scan_is_active(shared)
+        && config_matches
         && latest_frame.is_some_and(|latest| {
             latest.source_generation == work.frame.source_generation
                 && latest.pixel_size == work.frame.screenshot.size()
@@ -440,9 +504,14 @@ fn ocr_work_is_current(
 /// result unusable. Hit scanning intentionally applies the current pointer to
 /// the newest installed recognition, as the original pipeline did. Reject only
 /// hard boundaries that cannot safely share OCR coordinates or provider state.
-fn recognized_frame_is_publishable(frame: &RecognizedFrame, freshness: &SharedFreshness) -> bool {
-    let state = freshness.lock().unwrap_or_else(|error| error.into_inner());
-    state.config_revision == frame.revision.config
+fn recognized_frame_is_publishable(frame: &RecognizedFrame, shared: &SharedPipelineState) -> bool {
+    let state = shared
+        .freshness
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    frame.revision.scan_generation == shared.scan_generation.load(Ordering::Acquire)
+        && (state.desired_runtime.auto_scan || shared.hotkey_held.load(Ordering::Acquire))
+        && state.config_revision == frame.revision.config
         && state.latest_frame.as_ref().is_some_and(|latest| {
             latest.source_generation == frame.revision.source_generation
                 && latest.geometry.width == frame.capture_geometry.width
@@ -454,12 +523,35 @@ fn recognized_frame_is_publishable(frame: &RecognizedFrame, freshness: &SharedFr
         })
 }
 
-fn lookup_request_is_current(revision: u64, freshness: &SharedFreshness) -> bool {
-    freshness
+fn lookup_request_is_current(request: &LookupRequest, shared: &SharedPipelineState) -> bool {
+    request.scan_generation == shared.scan_generation.load(Ordering::Acquire)
+        && scan_is_active(shared)
+        && shared
+            .freshness
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .latest_lookup_revision
+            == request.revision
+}
+
+fn scan_is_active(shared: &SharedPipelineState) -> bool {
+    shared
+        .freshness
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .latest_lookup_revision
-        == revision
+        .desired_runtime
+        .auto_scan
+        || shared.hotkey_held.load(Ordering::Acquire)
+}
+
+fn popup_is_allowed(shared: &SharedPipelineState) -> bool {
+    let freshness = shared
+        .freshness
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    shared.hotkey_held.load(Ordering::Acquire)
+        || (freshness.desired_runtime.auto_scan
+            && freshness.desired_runtime.show_popup_without_hotkey)
 }
 
 fn take_latest_command(receiver: &Receiver<PipelineCommand>) -> Option<PipelineCommand> {
@@ -545,6 +637,7 @@ fn run_pipeline(
             capture_geometry,
             Arc::clone(&ocr_mailbox),
             Arc::clone(&lookup_mailbox),
+            event_sender.clone(),
         ),
         spawn_capture_worker(
             shared.clone(),
@@ -563,7 +656,6 @@ fn run_pipeline(
         spawn_lookup_worker(
             shared,
             lookup_engine,
-            config.max_lookup_length,
             config.show_kanji,
             lookup_mailbox,
             event_sender,
@@ -603,6 +695,8 @@ fn run_capture_worker(
     let _stop_pipeline = StopPipelineOnDrop(Arc::clone(&shared.running));
     let _close_output = CloseMailboxOnDrop(Arc::clone(&screenshot_mailbox));
     log::debug!("Screencast worker started");
+    let mut last_auto_capture = None;
+    let mut last_auto_pointer = None;
     while shared.running.load(Ordering::Acquire) {
         if shared
             .popup
@@ -612,6 +706,41 @@ fn run_capture_worker(
         {
             thread::sleep(Duration::from_millis(20));
             continue;
+        }
+
+        let runtime = shared
+            .freshness
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .desired_runtime
+            .clone();
+        if !runtime.auto_scan && !shared.hotkey_held.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        }
+        if runtime.auto_scan {
+            if let Some(last_capture) = last_auto_capture {
+                let elapsed = Instant::now().duration_since(last_capture);
+                if elapsed < runtime.auto_scan_cooldown {
+                    thread::sleep(
+                        (runtime.auto_scan_cooldown - elapsed).min(Duration::from_millis(20)),
+                    );
+                    continue;
+                }
+            }
+            let pointer = shared
+                .freshness
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .latest_pointer
+                .as_ref()
+                .map(|pointer| pointer.position);
+            if runtime.auto_scan_on_mouse_move && pointer == last_auto_pointer {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            last_auto_pointer = pointer;
+            last_auto_capture = Some(Instant::now());
         }
 
         match frame_provider.capture_frame() {
@@ -625,7 +754,11 @@ fn run_capture_worker(
                     freshness.latest_pointer.clone()
                 };
                 if let Some(pointer) = pointer {
-                    match screenshot_mailbox.send_replace(OcrWorkItem { frame, pointer }) {
+                    match screenshot_mailbox.send_replace(OcrWorkItem {
+                        frame,
+                        pointer,
+                        scan_generation: shared.scan_generation.load(Ordering::Acquire),
+                    }) {
                         Ok(Some(_)) => log::trace!("Replaced obsolete pending OCR input"),
                         Ok(None) => {}
                         Err(_) => break,
@@ -725,6 +858,7 @@ fn run_ocr_worker(
         }
         if let Some(cached) = cached_recognition.as_ref().filter(|cached| {
             cached.revision.config == active_config_revision
+                && cached.revision.scan_generation == work.scan_generation
                 && cached.revision.source_generation == work.frame.source_generation
                 && cached.pixel_size == work.frame.screenshot.size()
                 && (Arc::ptr_eq(&cached.input_raw, &work.frame.screenshot.raw)
@@ -737,7 +871,7 @@ fn run_ocr_worker(
             reused.input_raw = Arc::clone(&work.frame.screenshot.raw);
             reused.capture_geometry = work.frame.geometry.clone();
             if !already_published
-                && recognized_frame_is_publishable(&reused, &shared.freshness)
+                && recognized_frame_is_publishable(&reused, shared)
                 && ocr_mailbox.send_replace(OcrOutput::Frame(reused)).is_err()
             {
                 break;
@@ -745,7 +879,7 @@ fn run_ocr_worker(
             continue;
         }
 
-        if !ocr_work_is_current(&work, active_config_revision, &shared.freshness) {
+        if !ocr_work_is_current(&work, active_config_revision, shared) {
             log::debug!("Skipped OCR input superseded before recognition started");
             continue;
         }
@@ -764,6 +898,7 @@ fn run_ocr_worker(
         scan_sequence = scan_sequence.wrapping_add(1);
         let revision = ScanRevision {
             config: active_config_revision,
+            scan_generation: work.scan_generation,
             source_generation: work.frame.source_generation,
             frame_sequence: work.frame.sequence,
             scan_sequence,
@@ -790,7 +925,7 @@ fn run_ocr_worker(
                     paragraphs.len()
                 );
                 recognized.paragraphs = paragraphs;
-                if !recognized_frame_is_publishable(&recognized, &shared.freshness) {
+                if !recognized_frame_is_publishable(&recognized, shared) {
                     log::debug!("Discarded OCR result superseded while recognition was running");
                     continue;
                 }
@@ -814,6 +949,7 @@ fn spawn_hit_scan_worker(
     capture_geometry: Option<CaptureGeometry>,
     ocr_mailbox: Arc<LatestMailbox<OcrOutput>>,
     lookup_mailbox: Arc<LatestMailbox<LookupRequest>>,
+    event_sender: Sender<PipelineEvent>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("HitScannerWorker".to_owned())
@@ -824,6 +960,7 @@ fn spawn_hit_scan_worker(
                 capture_geometry,
                 ocr_mailbox,
                 lookup_mailbox,
+                event_sender,
             )
         })
         .expect("failed to spawn HitScannerWorker")
@@ -835,6 +972,7 @@ fn run_hit_scan_worker(
     capture_geometry: Option<CaptureGeometry>,
     ocr_mailbox: Arc<LatestMailbox<OcrOutput>>,
     lookup_mailbox: Arc<LatestMailbox<LookupRequest>>,
+    event_sender: Sender<PipelineEvent>,
 ) {
     let _stop_pipeline = StopPipelineOnDrop(Arc::clone(&shared.running));
     let _close_output = CloseMailboxOnDrop(Arc::clone(&lookup_mailbox));
@@ -873,9 +1011,10 @@ fn run_hit_scan_worker(
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .latest_pointer = Some(pointer.clone());
+        let popup_allowed = popup_is_allowed(shared);
         let recognition_is_current = recognized_frame
             .as_ref()
-            .is_some_and(|frame| recognized_frame_is_publishable(frame, &shared.freshness));
+            .is_some_and(|frame| recognized_frame_is_publishable(frame, shared));
 
         let active_geometry = pointer
             .capture_geometry
@@ -893,6 +1032,20 @@ fn run_hit_scan_worker(
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .pointer_is_blocked(pointer.position);
+        if !scan_is_active(shared) {
+            recognized_frame = None;
+            previous_input = None;
+            if !pointer_blocked_by_popup {
+                hide_popup_if_visible(
+                    &event_sender,
+                    &shared.popup,
+                    pointer.position.0,
+                    pointer.position.1,
+                );
+            }
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        }
         let current_input = LookupInput {
             pointer: pointer.position,
             capture_geometry: active_geometry.clone(),
@@ -900,6 +1053,7 @@ fn run_hit_scan_worker(
             source_generation: pointer.source_generation,
             ocr_sequence,
             pointer_blocked_by_popup,
+            popup_allowed,
         };
         if previous_input.as_ref() == Some(&current_input) {
             thread::sleep(Duration::from_millis(20));
@@ -931,9 +1085,17 @@ fn run_hit_scan_worker(
             .flatten()
             .and_then(|point| hit_scan(&recognized_frame.as_ref()?.paragraphs, point.x, point.y));
 
+        let max_lookup_length = shared
+            .freshness
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .desired_runtime
+            .max_lookup_length;
         if lookup_mailbox
             .send_replace(LookupRequest {
                 revision: lookup_revision,
+                scan_generation: shared.scan_generation.load(Ordering::Acquire),
+                max_lookup_length,
                 lookup_string,
                 mouse_x: pointer.position.0,
                 mouse_y: pointer.position.1,
@@ -966,7 +1128,6 @@ fn normalized_pointer_position(
 fn spawn_lookup_worker(
     shared: SharedPipelineState,
     mut lookup_engine: LookupEngine,
-    max_lookup_length: usize,
     show_kanji: bool,
     lookup_mailbox: Arc<LatestMailbox<LookupRequest>>,
     event_sender: Sender<PipelineEvent>,
@@ -977,7 +1138,6 @@ fn spawn_lookup_worker(
             run_lookup_worker(
                 &shared,
                 &mut lookup_engine,
-                max_lookup_length,
                 show_kanji,
                 &lookup_mailbox,
                 &event_sender,
@@ -989,7 +1149,6 @@ fn spawn_lookup_worker(
 fn run_lookup_worker(
     shared: &SharedPipelineState,
     lookup_engine: &mut LookupEngine,
-    max_lookup_length: usize,
     show_kanji: bool,
     lookup_mailbox: &LatestMailbox<LookupRequest>,
     event_sender: &Sender<PipelineEvent>,
@@ -1001,25 +1160,37 @@ fn run_lookup_worker(
             break;
         };
         let request = item.value;
-        if !lookup_request_is_current(request.revision, &shared.freshness) {
+        if !lookup_request_is_current(&request, shared) {
+            continue;
+        }
+        if !popup_is_allowed(shared) {
+            hide_popup_if_visible(
+                event_sender,
+                &shared.popup,
+                request.mouse_x,
+                request.mouse_y,
+            );
             continue;
         }
 
         let prepared_text = request
             .lookup_string
             .as_deref()
-            .map(|text| lookup_engine.prepare_lookup_text(text, max_lookup_length))
+            .map(|text| lookup_engine.prepare_lookup_text(text, request.max_lookup_length))
             .filter(|text| !text.is_empty());
 
         if let (Some(lookup_string), Some(capture_geometry)) =
             (prepared_text, request.capture_geometry)
         {
-            let result = lookup_engine.lookup_cached(&lookup_string, max_lookup_length, show_kanji);
+            let result =
+                lookup_engine.lookup_cached(&lookup_string, request.max_lookup_length, show_kanji);
             let current = shared
                 .freshness
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if current.latest_lookup_revision != request.revision {
+            if current.latest_lookup_revision != request.revision
+                || request.scan_generation != shared.scan_generation.load(Ordering::Acquire)
+            {
                 log::debug!("Discarded dictionary result superseded during lookup");
                 continue;
             }
@@ -1040,6 +1211,7 @@ fn run_lookup_worker(
                 );
                 if event_sender
                     .send(PipelineEvent::LookupResult {
+                        scan_generation: request.scan_generation,
                         entries: result.entries,
                         kanji: result.kanji_entry,
                         mouse_x: request.mouse_x,
@@ -1119,7 +1291,7 @@ mod tests {
     use super::{
         ConfigRevision, FreshnessState, LatestFrameIdentity, LookupInput, OcrRateLimiter,
         PipelineCommand, PipelineRuntimeConfig, PopupState, RecognizedFrame, ScanRevision,
-        StopPipelineOnDrop, normalized_pointer_position, ocr_work_is_current,
+        StopPipelineOnDrop, normalized_pointer_position, ocr_work_is_current, popup_is_allowed,
         recognized_frame_is_publishable, take_latest_command,
     };
     use crate::ocr::interface::NormalizedPoint;
@@ -1227,6 +1399,7 @@ mod tests {
             source_generation: 1,
             ocr_sequence: Some(4),
             pointer_blocked_by_popup: false,
+            popup_allowed: true,
         }
     }
 
@@ -1234,6 +1407,7 @@ mod tests {
         RecognizedFrame {
             revision: ScanRevision {
                 config: ConfigRevision(0),
+                scan_generation: 0,
                 source_generation: 1,
                 frame_sequence,
                 scan_sequence: 1,
@@ -1263,6 +1437,17 @@ mod tests {
                 source_generation: 1,
                 target_available: true,
             },
+            scan_generation: 0,
+        }
+    }
+
+    fn shared(freshness: Arc<Mutex<FreshnessState>>) -> super::SharedPipelineState {
+        super::SharedPipelineState {
+            running: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            hotkey_held: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            scan_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            popup: Arc::new(Mutex::new(PopupState::default())),
+            freshness,
         }
     }
 
@@ -1293,7 +1478,7 @@ mod tests {
         let frame = recognized(Arc::clone(&pixels), 1);
         let freshness = freshness(Arc::from([1, 2, 3, 4]), 2);
 
-        assert!(recognized_frame_is_publishable(&frame, &freshness));
+        assert!(recognized_frame_is_publishable(&frame, &shared(freshness)));
     }
 
     #[test]
@@ -1301,7 +1486,7 @@ mod tests {
         let frame = recognized(Arc::from([1, 2, 3, 4]), 1);
         let freshness = freshness(Arc::from([4, 3, 2, 1]), 2);
 
-        assert!(recognized_frame_is_publishable(&frame, &freshness));
+        assert!(recognized_frame_is_publishable(&frame, &shared(freshness)));
     }
 
     #[test]
@@ -1314,7 +1499,7 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner())
             .config_revision = ConfigRevision(1);
 
-        assert!(!recognized_frame_is_publishable(&frame, &freshness));
+        assert!(!recognized_frame_is_publishable(&frame, &shared(freshness)));
     }
 
     #[test]
@@ -1330,7 +1515,7 @@ mod tests {
             .unwrap()
             .position = (70, 70);
 
-        assert!(recognized_frame_is_publishable(&frame, &freshness));
+        assert!(recognized_frame_is_publishable(&frame, &shared(freshness)));
     }
 
     #[test]
@@ -1346,7 +1531,11 @@ mod tests {
             .unwrap()
             .position = (70, 70);
 
-        assert!(ocr_work_is_current(&work, ConfigRevision(0), &freshness));
+        assert!(ocr_work_is_current(
+            &work,
+            ConfigRevision(0),
+            &shared(freshness)
+        ));
     }
 
     #[test]
@@ -1359,7 +1548,39 @@ mod tests {
         state.latest_pointer.as_mut().unwrap().source_generation = 2;
         drop(state);
 
-        assert!(!recognized_frame_is_publishable(&frame, &freshness));
+        assert!(!recognized_frame_is_publishable(&frame, &shared(freshness)));
+    }
+
+    #[test]
+    fn scan_generation_change_rejects_completed_ocr() {
+        let pixels: Arc<[u8]> = Arc::from([1, 2, 3, 4]);
+        let frame = recognized(Arc::clone(&pixels), 1);
+        let shared = shared(freshness(pixels, 1));
+        shared
+            .scan_generation
+            .store(1, std::sync::atomic::Ordering::Release);
+
+        assert!(!recognized_frame_is_publishable(&frame, &shared));
+    }
+
+    #[test]
+    fn auto_popup_policy_can_require_the_hotkey() {
+        let shared = shared(freshness(Arc::from([1, 2, 3, 4]), 1));
+        shared
+            .hotkey_held
+            .store(false, std::sync::atomic::Ordering::Release);
+        shared
+            .freshness
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .desired_runtime
+            .show_popup_without_hotkey = false;
+
+        assert!(!popup_is_allowed(&shared));
+        shared
+            .hotkey_held
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(popup_is_allowed(&shared));
     }
 
     #[test]
@@ -1371,6 +1592,7 @@ mod tests {
                     revision: ConfigRevision(revision),
                     config: PipelineRuntimeConfig {
                         ocr_provider: format!("provider-{revision}"),
+                        ..PipelineRuntimeConfig::default()
                     },
                 })
                 .unwrap();
@@ -1382,6 +1604,7 @@ mod tests {
                 revision: ConfigRevision(3),
                 config: PipelineRuntimeConfig {
                     ocr_provider: "provider-3".to_owned(),
+                    ..PipelineRuntimeConfig::default()
                 },
             })
         );

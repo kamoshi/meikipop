@@ -64,10 +64,11 @@ impl OcrProcessor {
     }
 
     pub fn available_providers() -> Vec<OcrProviderInfo> {
-        let mut providers = vec![MEIKIOCR_PROVIDER];
         #[cfg(target_os = "macos")]
-        providers.push(APPLE_VISION_PROVIDER);
-        providers
+        return vec![MEIKIOCR_PROVIDER, APPLE_VISION_PROVIDER];
+
+        #[cfg(not(target_os = "macos"))]
+        vec![MEIKIOCR_PROVIDER]
     }
 
     /// Switches backend and returns whether a replacement actually occurred.

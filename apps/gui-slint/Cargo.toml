@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 fontdb = "0.23"
+futures-util = "0.3"
 meikipop-native = { path = "../../crates/native" }
 slint = { version = "=1.17.0", default-features = false, features = [
     "compat-1-2",
@@ -17,6 +18,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "global_shortcuts"] }
+async-io = "2.6"
 raw-window-handle = "0.6"
 slint = { version = "=1.17.0", default-features = false, features = [
     "backend-winit-x11",

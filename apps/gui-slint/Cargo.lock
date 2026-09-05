@@ -3511,7 +3511,10 @@ dependencies = [
 name = "meikipop-gui"
 version = "0.1.0"
 dependencies = [
+ "ashpd",
+ "async-io",
  "fontdb",
+ "futures-util",
  "meikipop-native",
  "raw-window-handle",
  "slint",

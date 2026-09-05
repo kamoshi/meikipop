@@ -48,6 +48,24 @@ export component MeikiPopTray inherits SystemTrayIcon {
 
         MenuSeparator { }
 
+        Menu {
+            title: "Scan Mode";
+            MenuItem {
+                title: "Auto";
+                checkable: true;
+                checked: root.selected-scan-mode == "auto";
+                activated => { root.choose-scan-mode("auto"); }
+            }
+            MenuItem {
+                title: "Hold Hotkey";
+                checkable: true;
+                checked: root.selected-scan-mode == "hotkey";
+                activated => { root.choose-scan-mode("hotkey"); }
+            }
+        }
+
+        MenuSeparator { }
+
         MenuItem {
             title: "Pause meikipop";
             checkable: true;

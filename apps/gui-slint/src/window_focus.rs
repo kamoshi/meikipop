@@ -162,10 +162,10 @@ mod linux {
                 None => return,
             };
 
-            if self.window_id.get().is_none() {
-                if let Some(wid) = Self::extract_window_id(popup) {
-                    self.window_id.set(Some(wid));
-                }
+            if self.window_id.get().is_none()
+                && let Some(wid) = Self::extract_window_id(popup)
+            {
+                self.window_id.set(Some(wid));
             }
 
             let Some(wid) = self.window_id.get() else {

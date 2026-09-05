@@ -37,14 +37,18 @@
       ];
 
       mkLinuxShell =
-        system:
+        system: withCuda:
         let
-          pkgs = import nixpkgs { inherit system; };
+          # CUDA is unfree. Restrict that allowance to the opt-in CUDA shell so
+          # ordinary development stays independent of the user's Nix policy.
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfree = withCuda;
+          };
           unstablePkgs = import nixpkgs-unstable { inherit system; };
+          cudaPackages = pkgs.cudaPackages_13;
 
-        in
-        pkgs.mkShell {
-          packages = commonPackages pkgs unstablePkgs ++ [
+          linuxPackages = [
             # Wayland ScreenCast portal / PipeWire support.
             pkgs.pipewire
 
@@ -59,21 +63,40 @@
             pkgs.xorg.libxcb.dev
           ];
 
+          runtimeLibraries = [
+            pkgs.libxkbcommon
+            pkgs.wayland
+            pkgs.xorg.libX11
+            pkgs.xorg.libXcursor
+            pkgs.xorg.libXi
+            pkgs.xorg.libxcb
+          ] ++ pkgs.lib.optionals withCuda [
+            cudaPackages.cudatoolkit
+            cudaPackages.libcublas
+            cudaPackages.cudnn
+          ];
+
+        in
+        pkgs.mkShell {
+          packages = commonPackages pkgs unstablePkgs
+            ++ linuxPackages
+            ++ pkgs.lib.optionals withCuda runtimeLibraries;
+
           shellHook = ''
             export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
             export BINDGEN_EXTRA_CLANG_ARGS="-I${pkgs.stdenv.cc.libc.dev}/include ''${BINDGEN_EXTRA_CLANG_ARGS:-}"
             export LD_LIBRARY_PATH="${
-              pkgs.lib.makeLibraryPath [
-                pkgs.libxkbcommon
-                pkgs.wayland
-                pkgs.xorg.libX11
-                pkgs.xorg.libXcursor
-                pkgs.xorg.libXi
-                pkgs.xorg.libxcb
-              ]
+              pkgs.lib.makeLibraryPath runtimeLibraries
             }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            ${pkgs.lib.optionalString withCuda ''
+              # libcuda comes from the host NVIDIA driver rather than the CUDA
+              # toolkit. NixOS exposes the active driver's libraries here.
+              if [ -d /run/opengl-driver/lib ]; then
+                export LD_LIBRARY_PATH="/run/opengl-driver/lib:''${LD_LIBRARY_PATH}"
+              fi
+            ''}
 
-            echo "meikipop development shell (Linux)"
+            echo "meikipop development shell (Linux${if withCuda then ", CUDA" else ""})"
             echo "  Run: meikipop"
             echo "  Native library: $PWD/crates/native"
             echo "  Rust GUI: cargo run --manifest-path apps/gui-slint/Cargo.toml"
@@ -156,7 +179,9 @@
     {
       devShells =
         (forSystems linuxSystems (system: {
-          default = mkLinuxShell system;
+          default = mkLinuxShell system false;
+        } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          cuda = mkLinuxShell system true;
         }))
         // (forSystems darwinSystems (system: {
           default = mkDarwinShell system;

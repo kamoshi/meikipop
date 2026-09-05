@@ -1,8 +1,111 @@
-import { CheckBox } from "std-widgets.slint";
+import { ComboBox, GroupBox, Slider, SpinBox } from "std-widgets.slint";
+
+component ColorButton inherits Rectangle {
+    in property <color> background-color;
+    in property <color> text-color: #000000;
+    in property <string> label;
+    height: 28px;
+    background: root.background-color;
+    border-width: 1px;
+    border-color: #555555;
+    border-radius: 4px;
+    horizontal-stretch: 1;
+    Text {
+        text: root.label;
+        color: root.text-color;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-size: 13px;
+        font-family: "monospace";
+    }
+}
 
 export component SettingsTabAppearance inherits VerticalLayout {
+    in property <length> label-width: 200px;
+    in-out property <string> preset <=> preset-combo.current-value;
+    in-out property <float> background-opacity <=> opacity-slider.value;
+    in-out property <string> font-family <=> font-combo.current-value;
+    in-out property <int> header-font-size <=> header-size-spin.value;
+    in-out property <int> definition-font-size <=> def-size-spin.value;
 
     padding: 16px;
     spacing: 12px;
     alignment: start;
+
+    GroupBox {
+        enabled: false;
+        title: "Theme";
+        content-padding: 1rem;
+        VerticalLayout {
+            spacing: 1rem;
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Preset:"; width: root.label-width; vertical-alignment: center; }
+                preset-combo := ComboBox { model: ["Nazeka", "Celestial Indigo", "Neutral Slate", "Academic", "Custom"]; current-value: "Nazeka"; horizontal-stretch: 1; }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Background Opacity:"; width: root.label-width; vertical-alignment: center; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    horizontal-stretch: 1;
+                    opacity-slider := Slider { minimum: 50; maximum: 255; value: 245; horizontal-stretch: 1; }
+                    Text { text: round(opacity-slider.value); width: 28px; vertical-alignment: center; horizontal-alignment: right; }
+                }
+            }
+        }
+    }
+
+    GroupBox {
+        enabled: false;
+        title: "Typography";
+        content-padding: 1rem;
+        VerticalLayout {
+            spacing: 1rem;
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Font Family:"; width: root.label-width; vertical-alignment: center; }
+                font-combo := ComboBox { model: ["Sans Serif", "System Default", "Hiragino Sans", "Yu Gothic", "Noto Sans JP"]; current-value: "Sans Serif"; horizontal-stretch: 1; }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Font Size (Header):"; width: root.label-width; vertical-alignment: center; }
+                header-size-spin := SpinBox { minimum: 8; maximum: 72; value: 18; horizontal-stretch: 1; }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Font Size (Definitions):"; width: root.label-width; vertical-alignment: center; }
+                def-size-spin := SpinBox { minimum: 8; maximum: 72; value: 14; horizontal-stretch: 1; }
+            }
+        }
+    }
+
+    GroupBox {
+        enabled: false;
+        title: "Colors";
+        content-padding: 1rem;
+        VerticalLayout {
+            spacing: 1rem;
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Background:"; width: root.label-width; vertical-alignment: center; }
+                ColorButton { background-color: #2e2e2e; text-color: #f0f0f0; label: "#2E2E2E"; }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Foreground:"; width: root.label-width; vertical-alignment: center; }
+                ColorButton { background-color: #f0f0f0; text-color: #000000; label: "#F0F0F0"; }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Highlight Word:"; width: root.label-width; vertical-alignment: center; }
+                ColorButton { background-color: #88d8ff; text-color: #000000; label: "#88D8FF"; }
+            }
+            HorizontalLayout {
+                spacing: 1rem;
+                Text { text: "Highlight Reading:"; width: root.label-width; vertical-alignment: center; }
+                ColorButton { background-color: #90ee90; text-color: #000000; label: "#90EE90"; }
+            }
+        }
+    }
 }

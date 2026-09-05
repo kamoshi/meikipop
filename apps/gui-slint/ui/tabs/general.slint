@@ -1,25 +1,170 @@
-import { ComboBox } from "std-widgets.slint";
+import {
+    Button,
+    CheckBox,
+    ComboBox,
+    GroupBox,
+    SpinBox,
+} from "std-widgets.slint";
 
 export component SettingsTabGeneral inherits VerticalLayout {
+    in property <length> label-width: 200px;
     in property <[string]> providers;
+    // Alt+S is only the preferred first-time choice; show the portal's actual binding.
+    in-out property <string> hotkey: "";
+    in-out property <int> max-lookup-length: 25;
+    in-out property <bool> auto-scan: true;
+    in-out property <bool> auto-scan-on-mouse-move: true;
+    in-out property <int> auto-scan-interval-milliseconds: 500;
+    in-out property <bool> show-popup-without-hotkey: true;
 
     in-out property <string> selected-provider <=> provider-box.current-value;
+
+    callback change-hotkey();
 
     padding: 16px;
     spacing: 12px;
     alignment: start;
 
-    HorizontalLayout {
-        spacing: 12px;
+    GroupBox {
+        title: "Core Settings";
+        content-padding: 1rem;
 
-        Text {
-            text: "OCR Provider:";
-            vertical-alignment: center;
+        VerticalLayout {
+            spacing: 1rem;
+
+            HorizontalLayout {
+                spacing: 1rem;
+
+                Text {
+                    text: "Hotkey:";
+                    width: root.label-width;
+                    vertical-alignment: center;
+                }
+
+                Button {
+                    text: root.hotkey != "" ? root.hotkey : "Configure Shortcut...";
+                    horizontal-stretch: 1;
+                    clicked => { root.change-hotkey(); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 1rem;
+
+                Text {
+                    text: "OCR Provider:";
+                    width: root.label-width;
+                    vertical-alignment: center;
+                }
+
+                provider-box := ComboBox {
+                    model: root.providers;
+                    horizontal-stretch: 1;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 1rem;
+
+                Text {
+                    text: "Max Lookup Length:";
+                    width: root.label-width;
+                    vertical-alignment: center;
+                }
+
+                SpinBox {
+                    value <=> root.max-lookup-length;
+                    minimum: 5;
+                    maximum: 100;
+                    horizontal-stretch: 1;
+                }
+            }
         }
+    }
 
-        provider-box := ComboBox {
-            model: root.providers;
-            width: 180px;
+    GroupBox {
+        title: "Autoscan Mode";
+        content-padding: 1rem;
+
+        VerticalLayout {
+            spacing: 1rem;
+
+            HorizontalLayout {
+                spacing: 1rem;
+
+                Text {
+                    text: "Enable autoscan:";
+                    width: root.label-width;
+                    vertical-alignment: center;
+                }
+
+                HorizontalLayout {
+                    alignment: start;
+                    horizontal-stretch: 1;
+
+                    CheckBox {
+                        checked <=> root.auto-scan;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 1rem;
+
+                Text {
+                    text: "Only scan on mouse move:";
+                    width: root.label-width;
+                    vertical-alignment: center;
+                }
+
+                HorizontalLayout {
+                    alignment: start;
+                    horizontal-stretch: 1;
+
+                    CheckBox {
+                        enabled: root.auto-scan;
+                        checked <=> root.auto-scan-on-mouse-move;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 1rem;
+
+                Text {
+                    text: "Scan interval (milliseconds):";
+                    width: root.label-width;
+                    vertical-alignment: center;
+                }
+
+                SpinBox {
+                    enabled: root.auto-scan;
+                    value <=> root.auto-scan-interval-milliseconds;
+                    minimum: 100;
+                    maximum: 60000;
+                    horizontal-stretch: 1;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 1rem;
+
+                Text {
+                    text: "Show popup without hotkey:";
+                    width: root.label-width;
+                    vertical-alignment: center;
+                }
+
+                HorizontalLayout {
+                    alignment: start;
+                    horizontal-stretch: 1;
+
+                    CheckBox {
+                        enabled: root.auto-scan;
+                        checked <=> root.show-popup-without-hotkey;
+                    }
+                }
+            }
         }
     }
 }

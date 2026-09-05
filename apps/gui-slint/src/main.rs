@@ -6,12 +6,14 @@ use std::time::Duration;
 
 use fontdb::{Database, Family, Query};
 use meikipop_native::dictionary::lookup::{DictionaryEntry, KanjiEntry};
-use meikipop_native::ocr::ocr::DEFAULT_PROVIDER_ID;
 use meikipop_native::pipeline::{Pipeline, PipelineConfig, PipelineEvent, PipelineRuntimeConfig};
 use meikipop_native::platform::interface::CaptureGeometry;
 use slint::{ComponentHandle, ModelRc, VecModel};
 
+mod hotkey;
 mod logger;
+mod settings;
+mod setup_settings;
 mod setup_tray;
 mod window_focus;
 
@@ -20,7 +22,6 @@ use window_focus::PopupFocusControl;
 slint::include_modules!();
 
 const MAX_DICT_ENTRIES: usize = 10;
-const MAX_LOOKUP_LENGTH: usize = 25;
 
 #[derive(Clone, Debug)]
 struct FormattedEntryData {
@@ -77,7 +78,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     popup.set_ui_font_family(font_family.into());
     let tray = MeikiPopTray::new()?;
-    let runtime_config = Rc::new(RefCell::new(initial_runtime_config()));
+    let settings_controller = Rc::new(settings::SettingsController::load());
+    let runtime_config = Rc::new(RefCell::new(settings_controller.pipeline_config()));
     let pipeline = Rc::new(RefCell::new(Pipeline::start(pipeline_config(
         runtime_config.borrow().clone(),
     ))?));
@@ -91,7 +93,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let settings = SettingsWindow::new()?;
 
-    setup_tray::setup_tray(&tray, settings.as_weak());
+    setup_tray::setup_tray(
+        &tray,
+        settings.as_weak(),
+        Rc::clone(&settings_controller),
+        Rc::clone(&pipeline),
+        Rc::clone(&runtime_config),
+    );
+    setup_settings::setup_settings(
+        &settings,
+        tray.as_weak(),
+        Rc::clone(&settings_controller),
+        Rc::clone(&pipeline),
+        Rc::clone(&runtime_config),
+    );
 
     let pipeline_for_screen_choice = Rc::clone(&pipeline);
     let runtime_config_for_screen_choice = Rc::clone(&runtime_config);
@@ -126,10 +141,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let pipeline_for_provider_choice = Rc::clone(&pipeline);
     let runtime_config_for_provider_choice = Rc::clone(&runtime_config);
+    let controller_for_provider_choice = Rc::clone(&settings_controller);
     tray.on_choose_provider(move |provider_id| {
-        let config = PipelineRuntimeConfig {
-            ocr_provider: provider_id.to_string(),
-        };
+        let mut updated = controller_for_provider_choice.current();
+        updated.ocr_provider = provider_id.to_string();
+        if let Err(error) = controller_for_provider_choice.apply(updated) {
+            tracing::warn!(%error, "Could not save OCR provider setting");
+            return;
+        }
+        let config = controller_for_provider_choice.pipeline_config();
         match pipeline_for_provider_choice
             .borrow()
             .update_config(config.clone())
@@ -249,12 +269,17 @@ fn process_pipeline_events(
                 }
             }
             PipelineEvent::LookupResult {
+                scan_generation,
                 entries,
                 kanji,
                 mouse_x,
                 mouse_y,
                 capture_geometry,
             } => {
+                if !pipeline.borrow().accepts_lookup_result(scan_generation) {
+                    tracing::debug!(scan_generation, "Ignoring stale or hidden lookup result");
+                    continue;
+                }
                 let Some(popup) = popup_weak.upgrade() else {
                     continue;
                 };
@@ -495,17 +520,9 @@ fn pipeline_config(runtime: PipelineRuntimeConfig) -> PipelineConfig {
         dictionary_path: dictionary_path(),
         screencast_token_path: screencast_token_path(),
         max_dict_entries: MAX_DICT_ENTRIES,
-        max_lookup_length: MAX_LOOKUP_LENGTH,
         show_kanji: true,
         capture_interval: Duration::from_millis(300),
         runtime,
-    }
-}
-
-fn initial_runtime_config() -> PipelineRuntimeConfig {
-    PipelineRuntimeConfig {
-        ocr_provider: std::env::var("MEIKIPOP_OCR_PROVIDER")
-            .unwrap_or_else(|_| DEFAULT_PROVIDER_ID.to_owned()),
     }
 }
 

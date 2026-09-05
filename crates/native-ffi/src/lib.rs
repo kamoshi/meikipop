@@ -13,7 +13,6 @@ use meikipop_native::platform::interface::CaptureGeometry;
 use serde::{Deserialize, Serialize};
 
 const MAX_DICT_ENTRIES: usize = 10;
-const MAX_LOOKUP_LENGTH: usize = 25;
 static LOGGING_INIT: Once = Once::new();
 
 /// Installs a stderr logger for Rust code hosted by the Swift application.
@@ -45,6 +44,7 @@ impl From<CoreConfiguration> for PipelineRuntimeConfig {
     fn from(config: CoreConfiguration) -> Self {
         Self {
             ocr_provider: config.ocr_provider,
+            ..PipelineRuntimeConfig::default()
         }
     }
 }
@@ -202,7 +202,6 @@ pub unsafe extern "C" fn meikipop_pipeline_start(
         // The macOS provider does not use a screencast restoration token.
         screencast_token_path: PathBuf::new(),
         max_dict_entries: MAX_DICT_ENTRIES,
-        max_lookup_length: MAX_LOOKUP_LENGTH,
         show_kanji: true,
         capture_interval: Duration::from_millis(300),
         runtime,
