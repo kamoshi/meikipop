@@ -3,12 +3,10 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use super::HotkeyEvents;
 use ashpd::desktop::Session;
 use ashpd::desktop::global_shortcuts::GlobalShortcuts;
 use futures_util::StreamExt;
-use slint::Weak;
-
-use crate::SettingsWindow;
 
 struct ActiveSession {
     // The session is tied to this D-Bus connection, so both must stay alive.
@@ -24,7 +22,7 @@ static CHOOSER_OPEN: AtomicBool = AtomicBool::new(false);
 static SIGNAL_LISTENERS_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Load the portal-approved binding without opening any UI.
-pub fn initialize(settings_weak: Weak<SettingsWindow>) {
+pub fn initialize(events: HotkeyEvents) {
     std::thread::spawn(move || {
         let _operation = SESSION_OPERATION
             .lock()
@@ -45,15 +43,15 @@ pub fn initialize(settings_weak: Weak<SettingsWindow>) {
         restore_active_session(active);
         match result {
             Ok(description) => {
-                start_signal_listeners(settings_weak.clone());
-                update_settings(settings_weak, description);
+                start_signal_listeners(events.clone());
+                events.binding_changed(description);
             }
             Err(err) => tracing::warn!(%err, "Could not initialize GlobalShortcuts portal session"),
         }
     });
 }
 
-fn start_signal_listeners(settings_weak: Weak<SettingsWindow>) {
+fn start_signal_listeners(events: HotkeyEvents) {
     if SIGNAL_LISTENERS_STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -67,7 +65,7 @@ fn start_signal_listeners(settings_weak: Weak<SettingsWindow>) {
     };
     for held in [true, false] {
         let connection = connection.clone();
-        let settings_weak = settings_weak.clone();
+        let events = events.clone();
         std::thread::spawn(move || {
             let result = async_io::block_on(async {
                 let portal = GlobalShortcuts::with_connection(connection).await?;
@@ -75,14 +73,14 @@ fn start_signal_listeners(settings_weak: Weak<SettingsWindow>) {
                     let mut signals = portal.receive_activated().await?;
                     while let Some(signal) = signals.next().await {
                         if signal.shortcut_id() == "scan_text" {
-                            notify_hotkey_state(settings_weak.clone(), true);
+                            events.held_changed(true);
                         }
                     }
                 } else {
                     let mut signals = portal.receive_deactivated().await?;
                     while let Some(signal) = signals.next().await {
                         if signal.shortcut_id() == "scan_text" {
-                            notify_hotkey_state(settings_weak.clone(), false);
+                            events.held_changed(false);
                         }
                     }
                 }
@@ -96,7 +94,7 @@ fn start_signal_listeners(settings_weak: Weak<SettingsWindow>) {
 }
 
 /// Open the portal's first-time picker or its existing-binding editor.
-pub fn choose(settings_weak: Weak<SettingsWindow>) {
+pub fn choose(events: HotkeyEvents) {
     if CHOOSER_OPEN.swap(true, Ordering::AcqRel) {
         tracing::debug!("Global shortcut chooser is already open");
         return;
@@ -144,7 +142,10 @@ pub fn choose(settings_weak: Weak<SettingsWindow>) {
                         version = session.portal.version(),
                         "This GlobalShortcuts portal cannot edit an existing binding; use the desktop's shortcut settings or upgrade to portal version 2"
                     );
-                    show_legacy_portal_notice(settings_weak.clone());
+                    events.show_info(
+                        "Change shortcut in System Settings",
+                        "Your desktop portal cannot edit an existing shortcut from this app. Open System Settings → Keyboard → Shortcuts and change MeikiPop’s ‘Scan Text Under Cursor’ shortcut there.",
+                    );
                     Ok::<_, ashpd::Error>(None)
                 }
             } else {
@@ -155,9 +156,9 @@ pub fn choose(settings_weak: Weak<SettingsWindow>) {
         CHOOSER_OPEN.store(false, Ordering::Release);
         match result {
             Ok(Some(description)) => {
-                start_signal_listeners(settings_weak.clone());
+                start_signal_listeners(events.clone());
                 tracing::info!(shortcut = %description, "Global shortcut chooser closed");
-                update_settings(settings_weak, description);
+                events.binding_changed(description);
             }
             Ok(None) => {}
             Err(err) => tracing::warn!(%err, "Could not open global shortcut chooser"),
@@ -206,28 +207,4 @@ fn shortcut_description(shortcuts: &[ashpd::desktop::global_shortcuts::Shortcut]
         .find(|shortcut| shortcut.id() == "scan_text")
         .map(|shortcut| shortcut.trigger_description().to_owned())
         .unwrap_or_default()
-}
-
-fn update_settings(settings_weak: Weak<SettingsWindow>, description: String) {
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(settings) = settings_weak.upgrade() {
-            settings.set_hotkey(description.into());
-        }
-    });
-}
-
-fn notify_hotkey_state(settings_weak: Weak<SettingsWindow>, held: bool) {
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(settings) = settings_weak.upgrade() {
-            settings.invoke_hotkey_held(held);
-        }
-    });
-}
-
-fn show_legacy_portal_notice(settings_weak: Weak<SettingsWindow>) {
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(settings) = settings_weak.upgrade() {
-            settings.set_show_hotkey_portal_notice(true);
-        }
-    });
 }

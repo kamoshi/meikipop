@@ -58,13 +58,7 @@ pub fn setup_settings(
 
     let settings_weak = settings.as_weak();
     settings.on_change_hotkey(move || {
-        #[cfg(target_os = "linux")]
-        crate::hotkey::linux::choose(settings_weak.clone());
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = &settings_weak;
-            tracing::info!("GlobalShortcuts portal is only supported on Linux");
-        }
+        crate::hotkey::choose(settings_weak.clone());
     });
 
     let pipeline_for_hotkey = Rc::clone(&pipeline);
@@ -72,8 +66,7 @@ pub fn setup_settings(
         pipeline_for_hotkey.borrow().set_hotkey_held(held);
     });
 
-    #[cfg(target_os = "linux")]
-    crate::hotkey::linux::initialize(settings.as_weak());
+    crate::hotkey::initialize(settings.as_weak());
 }
 
 pub fn load_draft(settings: &SettingsWindow, draft: &AppSettings) {

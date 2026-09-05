@@ -26,7 +26,9 @@ export component SettingsWindow inherits Window {
     in-out property <bool> auto-scan-on-mouse-move <=> tab-general.auto-scan-on-mouse-move;
     in-out property <int> auto-scan-interval-milliseconds <=> tab-general.auto-scan-interval-milliseconds;
     in-out property <bool> show-popup-without-hotkey <=> tab-general.show-popup-without-hotkey;
-    in-out property <bool> show-hotkey-portal-notice: false;
+    in-out property <bool> show-info-dialog: false;
+    in-out property <string> info-dialog-title: "";
+    in-out property <string> info-dialog-message: "";
 
     VerticalLayout {
         padding: 16px;
@@ -93,13 +95,13 @@ export component SettingsWindow inherits Window {
         }
     }
 
-    if root.show-hotkey-portal-notice: InfoDialog {
+    if root.show-info-dialog: InfoDialog {
         x: 0px;
         y: 0px;
         width: parent.width;
         height: parent.height;
-        title: "Change shortcut in System Settings";
-        message: "Your desktop portal cannot edit an existing shortcut from this app. Open System Settings → Keyboard → Shortcuts and change MeikiPop’s ‘Scan Text Under Cursor’ shortcut there.";
-        dismissed => { root.show-hotkey-portal-notice = false; }
+        title: root.info-dialog-title;
+        message: root.info-dialog-message;
+        dismissed => { root.show-info-dialog = false; }
     }
 }
