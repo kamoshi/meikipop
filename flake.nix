@@ -109,6 +109,8 @@
 
           environment = {
             MACOSX_DEPLOYMENT_TARGET = "14.0";
+            SDKROOT = "${pkgs.apple-sdk.sdkroot}";
+            RUSTFLAGS = "-C link-arg=-L${unstablePkgs.swift}/lib/swift/macosx -C link-arg=-L${pkgs.apple-sdk.sdkroot}/usr/lib/swift";
             CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER =
               "${linker}/bin/meikipop-rust-linker";
           };
@@ -151,6 +153,9 @@
           cargoRoot = "apps/gui-slint";
           buildAndTestSubdir = "apps/gui-slint";
           cargoLock.lockFile = ./apps/gui-slint/Cargo.lock;
+
+          dontUseSwiftpmBuild = true;
+          dontUseSwiftpmCheck = true;
 
           nativeBuildInputs = [
             pkgs.pkg-config
