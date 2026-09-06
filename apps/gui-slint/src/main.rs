@@ -512,7 +512,7 @@ fn calculate_popup_position(
 }
 
 fn dictionary_path() -> PathBuf {
-    data_dir().join("meikipop").join("dictionary.pkl")
+    data_dir().join("meikipop").join("dictionary.cbor")
 }
 
 fn pipeline_config(runtime: PipelineRuntimeConfig) -> PipelineConfig {

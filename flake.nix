@@ -121,8 +121,6 @@
       commonDevelopmentPackages =
         { pkgs, unstablePkgs }:
         [
-          # Temporarily needed by the embedded pickle-to-JSON converter.
-          unstablePkgs.python3
           (pkgs.writeShellScriptBin "meikipop" ''
             exec cargo run --manifest-path apps/gui-slint/Cargo.toml -- "$@"
           '')

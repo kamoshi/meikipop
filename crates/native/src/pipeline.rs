@@ -605,7 +605,7 @@ fn run_pipeline(
     send_ocr_provider_state(&event_sender, &ocr_processor, None);
 
     let lookup_engine =
-        match LookupEngine::open_paths(&config.dictionary_path, config.max_dict_entries) {
+        match LookupEngine::open_path(&config.dictionary_path, config.max_dict_entries) {
             Ok(engine) => engine,
             Err(error) => {
                 send_error(&event_sender, "Failed to load dictionary", error);

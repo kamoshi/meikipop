@@ -94,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private static var dictionaryPath: String {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/share/meikipop/dictionary.pkl")
+            .appendingPathComponent(".local/share/meikipop/dictionary.cbor")
             .path
     }
 }

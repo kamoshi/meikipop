@@ -116,21 +116,16 @@ impl LookupEngine {
         }
     }
 
-    pub fn open_paths(pickle_path: &Path, max_dict_entries: usize) -> Result<Self, String> {
-        if !pickle_path.exists() {
-            let data_dir = pickle_path
+    pub fn open_path(dictionary_path: &Path, max_dict_entries: usize) -> Result<Self, String> {
+        if !dictionary_path.exists() {
+            let data_dir = dictionary_path
                 .parent()
                 .ok_or_else(|| "Dictionary path has no parent directory".to_owned())?;
             customdict::download_dictionary(data_dir)?;
         }
 
-        let json_path = pickle_path.with_extension("json");
-        customdict::DictionaryData::load_or_convert(
-            Path::new(customdict::PYTHON_EXECUTABLE),
-            pickle_path,
-            &json_path,
-        )
-        .map(|dictionary| dictionary.into_lookup_engine(max_dict_entries))
+        customdict::DictionaryData::from_cbor_path(dictionary_path)
+            .map(|dictionary| dictionary.into_lookup_engine(max_dict_entries))
     }
 
     pub fn lookup(&self, text: &str) -> Vec<DictionaryEntry> {
