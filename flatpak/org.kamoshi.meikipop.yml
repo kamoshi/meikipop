@@ -1,0 +1,74 @@
+app-id: org.kamoshi.meikipop
+runtime: org.freedesktop.Platform
+runtime-version: "25.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm22
+command: meikipop-gui
+appstream-compose: false
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=x11
+  - --device=dri
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.kde.StatusNotifierItem-2-1
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+
+modules:
+  # This prebuilt CPU library keeps the first local-development iteration
+  # quick. A Flathub submission must replace it with a source-built module.
+  - name: onnxruntime
+    buildsystem: simple
+    build-commands:
+      - install -d /app/lib /app/include
+      - cp -a lib/libonnxruntime.so* /app/lib/
+      - cp -a include/. /app/include/
+    sources:
+      - type: archive
+        url: https://github.com/microsoft/onnxruntime/releases/download/v1.27.1/onnxruntime-linux-x64-1.27.1.tgz
+        sha256: 25b1ef1fea1acd210d63f8f24dc870ad6e077795ce1f54876252c6d3803c15af
+        only-arches:
+          - x86_64
+
+  - name: meikipop
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/meikipop/cargo
+        CARGO_NET_OFFLINE: "true"
+        BINDGEN_EXTRA_CLANG_ARGS: -isystem /usr/lib/sdk/llvm22/lib/clang/22/include
+        LIBCLANG_PATH: /usr/lib/sdk/llvm22/lib
+        ORT_LIB_LOCATION: /app/lib
+        ORT_PREFER_DYNAMIC_LINK: "1"
+    build-commands:
+      - cargo build --offline --release --manifest-path apps/gui-slint/Cargo.toml
+      - install -Dm755 apps/gui-slint/target/release/meikipop-gui /app/bin/meikipop-gui
+      - ln -s /usr/bin/python3 /app/bin/python
+      - install -Dm644 flatpak/org.kamoshi.meikipop.desktop /app/share/applications/org.kamoshi.meikipop.desktop
+      - install -Dm644 flatpak/org.kamoshi.meikipop.metainfo.xml /app/share/metainfo/org.kamoshi.meikipop.metainfo.xml
+      - install -d /app/share/icons/hicolor/256x256/apps
+      - ffmpeg -loglevel error -y -i resources/icon.ico -vf scale=256:256 /app/share/icons/hicolor/256x256/apps/org.kamoshi.meikipop.png
+      - appstreamcli compose --components=${FLATPAK_ID} --prefix=/ --origin=${FLATPAK_ID} --result-root=${FLATPAK_DEST} --data-dir=${FLATPAK_DEST}/share/app-info/xmls --icons-dir=${FLATPAK_DEST}/share/app-info/icons/flatpak ${FLATPAK_DEST}
+    sources:
+      - type: dir
+        path: ../apps
+        dest: apps
+        skip:
+          - gui-slint/target
+      - type: dir
+        path: ../crates
+        dest: crates
+      - type: dir
+        path: ../resources
+        dest: resources
+      - type: dir
+        path: .
+        dest: flatpak
+      - cargo-sources.json

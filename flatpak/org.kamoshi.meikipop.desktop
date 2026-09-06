@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=MeikiPop
+Comment=Japanese OCR popup dictionary
+Exec=meikipop-gui
+Icon=org.kamoshi.meikipop
+Terminal=false
+Type=Application
+Categories=Education;Languages;Utility;
+Keywords=Japanese;OCR;Dictionary;Popup;

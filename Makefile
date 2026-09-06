@@ -24,7 +24,7 @@ PLATFORM_BUILD_TARGETS :=
 PLATFORM_CHECK_TARGETS :=
 endif
 
-.PHONY: help run run-slint run-slint-cuda run-swift build build-native build-native-ffi build-slint \
+.PHONY: help run run-slint run-slint-cuda run-swift flatpak build build-native build-native-ffi build-slint \
 	build-swift check check-native check-native-ffi check-slint check-swift test \
 	test-native test-native-ffi
 
@@ -35,6 +35,7 @@ help:
 	@echo "  make run-slint      Run the Slint frontend"
 	@echo "  make run-slint-cuda Run the Slint frontend with the optional CUDA runtime (x86_64 Linux)"
 	@echo "  make run-swift      Run the Swift frontend (macOS only)"
+	@echo "  make flatpak        Build and reinstall the local Flatpak (x86_64 Linux)"
 	@echo "  make build          Build all frontends supported on this OS"
 	@echo "  make check          Check all frontends supported on this OS"
 	@echo "  make test           Run the native test suite"
@@ -43,6 +44,23 @@ help:
 	@echo "                   check-{native,native-ffi,slint,swift}"
 
 run: run-slint
+
+ifeq ($(HOST_OS),Linux)
+ifeq ($(HOST_ARCH),x86_64)
+flatpak:
+	nix run .#update-flatpak-sources
+	nix run .#build-flatpak
+	flatpak install --user --reinstall dist/meikipop.flatpak
+else
+flatpak:
+	@echo "The Flatpak build currently supports x86_64 Linux only."
+	@false
+endif
+else
+flatpak:
+	@echo "The Flatpak build currently supports x86_64 Linux only."
+	@false
+endif
 
 run-slint:
 	$(CARGO) run --release --manifest-path $(SLINT_MANIFEST)

@@ -16,6 +16,8 @@
         "x86_64-linux"
         "aarch64-darwin"
       ];
+      flatpakAppId = "org.kamoshi.meikipop";
+      flatpakRuntimeVersion = "25.08";
 
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
 
@@ -257,19 +259,121 @@
             echo "  Rust GUI: cargo run --manifest-path apps/gui-slint/Cargo.toml"
           '';
         };
+
+      mkFlatpakTools =
+        system:
+        let
+          packageSets = packageSetsFor system;
+          inherit (packageSets) pkgs unstablePkgs;
+          manifest = "flatpak/${flatpakAppId}.yml";
+
+          updateSources = pkgs.writeShellApplication {
+            name = "update-meikipop-flatpak-sources";
+            runtimeInputs = [ unstablePkgs.flatpak-builder-tools ];
+            text = ''
+              if [ ! -f "${manifest}" ]; then
+                echo "Run this command from the MeikiPop repository root." >&2
+                exit 1
+              fi
+
+              flatpak-cargo-generator \
+                apps/gui-slint/Cargo.lock \
+                -o flatpak/cargo-sources.json
+            '';
+          };
+
+          buildBundle = pkgs.writeShellApplication {
+            name = "build-meikipop-flatpak";
+            runtimeInputs = [
+              pkgs.coreutils
+              unstablePkgs.flatpak
+              unstablePkgs.flatpak-builder
+            ];
+            text = ''
+              if [ ! -f "${manifest}" ] || [ ! -f flatpak/cargo-sources.json ]; then
+                echo "Run this command from the MeikiPop repository root." >&2
+                echo "If Cargo sources are missing, run: nix run .#update-flatpak-sources" >&2
+                exit 1
+              fi
+
+              for runtime in \
+                "org.freedesktop.Platform//${flatpakRuntimeVersion}" \
+                "org.freedesktop.Sdk//${flatpakRuntimeVersion}" \
+                "org.freedesktop.Sdk.Extension.rust-stable//${flatpakRuntimeVersion}" \
+                "org.freedesktop.Sdk.Extension.llvm22//${flatpakRuntimeVersion}"; do
+                if ! flatpak info "$runtime" >/dev/null 2>&1; then
+                  echo "Missing Flatpak runtime: $runtime" >&2
+                  echo "Install it with: flatpak install flathub $runtime" >&2
+                  exit 1
+                fi
+              done
+
+              mkdir -p dist
+              flatpak-builder \
+                --force-clean \
+                --repo=bundle-repo \
+                build-flatpak \
+                "${manifest}"
+              flatpak build-bundle \
+                --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+                bundle-repo \
+                "dist/meikipop.flatpak" \
+                "${flatpakAppId}"
+
+              echo "Created dist/meikipop.flatpak"
+            '';
+          };
+        in
+        {
+          inherit buildBundle updateSources;
+
+          shell = pkgs.mkShell {
+            packages = [
+              unstablePkgs.appstream
+              unstablePkgs.flatpak
+              unstablePkgs.flatpak-builder
+              unstablePkgs.flatpak-builder-tools
+            ];
+            shellHook = ''
+              echo "MeikiPop Flatpak tools"
+              echo "  Refresh Cargo sources: nix run .#update-flatpak-sources"
+              echo "  Build bundle:          nix run .#build-flatpak"
+            '';
+          };
+        };
     in
     {
       packages = forAllSystems (system: {
         default = mkPackage system;
       });
 
-      apps = forAllSystems (system: {
-        default = {
-          type = "app";
-          program = "${self.packages.${system}.default}/bin/meikipop-gui";
-          meta.description = "Run MeikiPop";
-        };
-      });
+      apps = forAllSystems (
+        system:
+        {
+          default = {
+            type = "app";
+            program = "${self.packages.${system}.default}/bin/meikipop-gui";
+            meta.description = "Run MeikiPop";
+          };
+        }
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") (
+          let
+            tools = mkFlatpakTools system;
+          in
+          {
+            build-flatpak = {
+              type = "app";
+              program = "${tools.buildBundle}/bin/build-meikipop-flatpak";
+              meta.description = "Build a local MeikiPop Flatpak bundle";
+            };
+            update-flatpak-sources = {
+              type = "app";
+              program = "${tools.updateSources}/bin/update-meikipop-flatpak-sources";
+              meta.description = "Refresh vendored Cargo sources for Flatpak";
+            };
+          }
+        )
+      );
 
       devShells = forAllSystems (
         system:
@@ -277,6 +381,7 @@
           {
             default = mkLinuxShell system false;
             cuda = mkLinuxShell system true;
+            flatpak = (mkFlatpakTools system).shell;
           }
         else
           {

@@ -9,6 +9,8 @@
 !/README.md
 !/flake.lock
 !/flake.nix
+!/flatpak/
+!/flatpak/**
 
 # CI configuration.
 !/.github/

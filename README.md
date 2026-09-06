@@ -49,6 +49,26 @@ package names are `packages.x86_64-linux.default` and
 `packages.aarch64-darwin.default`. You can also use `make` for the development
 commands built on top of Nix.
 
+### Flatpak (Linux)
+
+Nix can also provide the Flatpak build tooling while `flatpak-builder` performs
+the actual sandboxed build:
+
+```sh
+flatpak install --user flathub \
+  org.freedesktop.Platform//25.08 \
+  org.freedesktop.Sdk//25.08 \
+  org.freedesktop.Sdk.Extension.rust-stable//25.08 \
+  org.freedesktop.Sdk.Extension.llvm22//25.08
+nix run .#update-flatpak-sources
+nix run .#build-flatpak
+flatpak install --user --reinstall dist/meikipop.flatpak
+flatpak run org.kamoshi.meikipop
+```
+
+The generated bundle is `dist/meikipop.flatpak`. Regenerate the offline Cargo
+source list whenever `apps/gui-slint/Cargo.lock` changes.
+
 
 ## License
 

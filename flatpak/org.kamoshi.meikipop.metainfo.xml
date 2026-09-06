@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.kamoshi.meikipop</id>
+  <name>MeikiPop</name>
+  <summary>Look up Japanese words anywhere on your screen</summary>
+  <developer id="org.kamoshi">
+    <name>Kamoshi</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <url type="homepage">https://github.com/kamoshi/meikipop</url>
+  <launchable type="desktop-id">org.kamoshi.meikipop.desktop</launchable>
+  <provides>
+    <binary>meikipop-gui</binary>
+  </provides>
+  <description>
+    <p>
+      MeikiPop uses optical character recognition to read Japanese text from
+      websites, games, scanned manga, and video subtitles, then displays
+      dictionary results in a popup.
+    </p>
+  </description>
+  <content_rating type="oars-1.1" />
+</component>
