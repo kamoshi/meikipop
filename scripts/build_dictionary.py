@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "cbor2>=5.6,<6",
+#     "cbor2>=6.1,<7",
 #     "lxml>=5,<7",
 #     "requests>=2.31,<3",
 # ]
