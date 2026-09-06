@@ -1,34 +1,40 @@
-"""
-build_dictionary.py
-Builds dictionary.pkl from downloaded source files.
-Downloaded source files are cached in user cache directory and reused on subsequent runs.
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "cbor2>=5.6,<6",
+#     "lxml>=5,<7",
+#     "requests>=2.31,<3",
+# ]
+# ///
+"""Build ``dictionary.cbor`` from the upstream Japanese dictionary sources.
+
+Run directly with ``uv run scripts/build_dictionary.py``.  Downloads are cached
+in the XDG cache directory and the resulting CBOR file is written to the XDG
+data directory, so this script has no project-package dependency.
 """
 
 import gzip
 import io
 import json
 import os
-import pickle
 import re
+import sys
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from itertools import count
-from typing import Optional
-import xml.etree.ElementTree as StdET
+from typing import NotRequired, TypeAlias, TypeGuard, TypedDict, cast
 
 import requests
+import cbor2
 from lxml import etree
-
-try:
-    from .paths import paths
-except ImportError:
-    from paths import paths
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-DATA_DIR = paths.cache_dir
-OUTPUT_PATH = paths.dictionary_path
+_HOME = os.path.expanduser('~')
+DATA_DIR = os.path.join(os.environ.get('XDG_CACHE_HOME', os.path.join(_HOME, '.cache')), 'meikipop')
+OUTPUT_PATH = os.path.join(os.environ.get('XDG_DATA_HOME', os.path.join(_HOME, '.local', 'share')), 'meikipop', 'dictionary.cbor')
 DECONJUGATOR_PATH = os.path.join(os.path.dirname(__file__), 'deconjugator.json')
 SYNTHETIC_ID_START = 10_000_000  # safely above any real JMdict seq number
 DEFAULT_FREQ       = 999_999
@@ -52,6 +58,77 @@ RENDAKU_MAP = {
 SOKUON_ENDINGS = ('く', 'き', 'つ', 'ち')
 
 
+# ── Dictionary data model ──────────────────────────────────────────────────────
+
+XmlElement: TypeAlias = etree.Element
+FreqMap: TypeAlias = dict[tuple[str, str], int]
+MapEntry: TypeAlias = tuple[str, str | None, int, int]
+FormPair: TypeAlias = tuple[str | None, frozenset[str], str, frozenset[str], bool]
+SenseGroup: TypeAlias = tuple[int, ...]
+OneOrManyStrings: TypeAlias = str | list[str]
+
+
+class Sense(TypedDict):
+    glosses: list[str]
+    pos: list[str]
+    tags: list[str]
+    stagk: NotRequired[list[str]]
+    stagr: NotRequired[list[str]]
+
+
+class JmdictInfo(TypedDict):
+    r: str
+    m: str
+
+
+class ReadingAttributes(TypedDict):
+    type: str | None
+    is_stem: bool
+    is_full: bool
+
+
+class DeconjugatorRule(TypedDict, total=False):
+    type: str
+    dec_end: OneOrManyStrings
+    con_end: OneOrManyStrings
+    dec_tag: OneOrManyStrings
+    con_tag: OneOrManyStrings
+    detail: str
+
+
+class WordExample(TypedDict):
+    w: str
+    r: str
+    m: str
+    rank: int
+
+
+class DisplayExample(TypedDict):
+    w: str
+    r: str
+    m: str
+
+
+class KanjiComponent(TypedDict, total=False):
+    c: str
+    m: str
+
+
+class KanjiEntry(TypedDict):
+    character: str
+    meanings: list[str]
+    readings: list[str]
+    components: list[KanjiComponent]
+    examples: list[DisplayExample]
+
+
+class DictionaryPayload(TypedDict):
+    entries: dict[int, list[Sense]]
+    lookup_map: dict[str, list[MapEntry]]
+    kanji_entries: dict[str, KanjiEntry]
+    deconjugator_rules: list[DeconjugatorRule]
+
+
 # ── Utilities ──────────────────────────────────────────────────────────────────
 
 def kata_to_hira(t: str) -> str:
@@ -63,7 +140,7 @@ def hira_to_kata(t: str) -> str:
 def is_hiragana(c: str) -> bool:
     return 0x3040 <= ord(c) <= 0x309F
 
-def get_variants(reading: str) -> set:
+def get_variants(reading: str) -> set[str]:
     v = {reading}
     if not reading:
         return v
@@ -77,10 +154,60 @@ def get_variants(reading: str) -> set:
     return v
 
 
+def required_text(element: XmlElement, path: str) -> str:
+    """Return a required child element's text, asserting the source schema."""
+    child = element.find(path)
+    assert child is not None and child.text is not None
+    return child.text
+
+
+def _is_one_or_many_strings(value: object) -> TypeGuard[OneOrManyStrings]:
+    if isinstance(value, str):
+        return True
+    if not isinstance(value, list):
+        return False
+    items = cast(list[object], value)
+    return all(isinstance(item, str) for item in items)
+
+
+def _is_deconjugator_rule(value: object) -> TypeGuard[DeconjugatorRule]:
+    if not isinstance(value, dict):
+        return False
+    mapping = cast(dict[object, object], value)
+
+    for field in ('type', 'detail'):
+        if field in mapping and not isinstance(mapping[field], str):
+            return False
+
+    for field in ('dec_end', 'con_end', 'dec_tag', 'con_tag'):
+        if field in mapping and not _is_one_or_many_strings(mapping[field]):
+            return False
+
+    return True
+
+
+def load_deconjugator_rules(path: str) -> list[DeconjugatorRule]:
+    with open(path, 'r', encoding='utf-8') as f:
+        raw = cast(object, json.load(f))
+
+    if not isinstance(raw, list):
+        raise ValueError('deconjugator rules must be a JSON array')
+
+    rules: list[DeconjugatorRule] = []
+    for index, value in enumerate(raw):
+        if not isinstance(value, dict):
+            continue
+        if not _is_deconjugator_rule(value):
+            raise ValueError(f'invalid deconjugator rule at index {index}')
+        rules.append(value)
+    return rules
+
+
 # ── Download / cache ───────────────────────────────────────────────────────────
 
-def ensure_dirs():
+def ensure_dirs() -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
 
 def load_or_download(key: str) -> bytes:
     path = os.path.join(DATA_DIR, key)
@@ -92,16 +219,16 @@ def load_or_download(key: str) -> bytes:
     print(f"  Downloading {key} from {url} ...")
     data = requests.get(url, timeout=120).content
     with open(path, 'wb') as f:
-        f.write(data)
+        _ = f.write(data)
     print(f"  Saved {len(data) // 1024} KB to {path}")
     return data
 
 
 # ── Frequency ──────────────────────────────────────────────────────────────────
 
-def load_freq_map(csv_bytes: bytes) -> dict:
+def load_freq_map(csv_bytes: bytes) -> FreqMap:
     """Returns {(word, form): rank} from the frequency CSV."""
-    result = {}
+    result: FreqMap = {}
     for line in csv_bytes.decode('utf-8').splitlines()[1:]:  # skip header
         parts = line.split(',')
         if len(parts) >= 3:
@@ -116,7 +243,7 @@ def load_freq_map(csv_bytes: bytes) -> dict:
 
 # ── JMdict parsing ─────────────────────────────────────────────────────────────
 
-def parse_jmdict_root(gz_bytes: bytes):
+def parse_jmdict_root(gz_bytes: bytes) -> XmlElement:
     """Parse JMdict_e from gzipped bytes, resolving entity references."""
     xml_bytes = gzip.decompress(gz_bytes)
     parser    = etree.XMLParser(resolve_entities=False)
@@ -125,16 +252,17 @@ def parse_jmdict_root(gz_bytes: bytes):
     for ent in tree.iter(etree.Entity):
         parent = ent.getparent()
         if parent is not None:
-            parent.text = (parent.text or '') + (ent.text or '')
+            parent_text = (parent.text or '') + (ent.text or '')
             if ent.tail:
-                parent.text += ent.tail
+                parent_text += ent.tail
+            parent.text = parent_text
     return tree.getroot()
 
 
-def _process_senses(entry_elem) -> list:
+def _process_senses(entry_elem: XmlElement) -> list[Sense]:
     """Extract and normalise sense elements. Propagates pos across senses per JMdict spec."""
-    senses   = []
-    last_pos = []
+    senses: list[Sense] = []
+    last_pos: list[str] = []
     for sense in entry_elem.iter('sense'):
         stagk   = [e.text for e in sense.findall('stagk') if e.text]
         stagr   = [e.text for e in sense.findall('stagr') if e.text]
@@ -146,7 +274,11 @@ def _process_senses(entry_elem) -> list:
                    if g.get(XML_LANG, 'eng') == 'eng' and g.text]
         if not glosses:
             continue
-        normalized_sense = {'glosses': glosses, 'pos': list(last_pos), 'tags': tags}
+        normalized_sense: Sense = {
+            'glosses': glosses,
+            'pos': list(last_pos),
+            'tags': tags,
+        }
         if stagk:
             normalized_sense['stagk'] = stagk
         if stagr:
@@ -155,12 +287,14 @@ def _process_senses(entry_elem) -> list:
     return senses
 
 
-def _applicable_sense_indices(senses: list, keb: Optional[str], reb: str) -> tuple:
+def _applicable_sense_indices(
+    senses: list[Sense], keb: str | None, reb: str
+) -> SenseGroup:
     """
     Return tuple of sense indices applicable to a (keb, reb) pair.
     keb=None means kana-only (no kanji form for this lookup path).
     """
-    out = []
+    out: list[int] = []
     for i, s in enumerate(senses):
         stagk = s.get('stagk', [])
         stagr = s.get('stagr', [])
@@ -171,7 +305,9 @@ def _applicable_sense_indices(senses: list, keb: Optional[str], reb: str) -> tup
     return tuple(out)
 
 
-def build_jmdict_data(root, freq_map: dict):
+def build_jmdict_data(
+    root: XmlElement, freq_map: FreqMap
+) -> tuple[dict[int, list[Sense]], defaultdict[str, list[MapEntry]]]:
     """
     Walk the parsed JMdict root and produce:
       entries    – {entry_id: [sense, ...]}
@@ -181,25 +317,25 @@ def build_jmdict_data(root, freq_map: dict):
 
     lookup_map keys are keb or reb surface strings
     """
-    entries    = {}
-    lookup_map = defaultdict(list)
+    entries: dict[int, list[Sense]] = {}
+    lookup_map: defaultdict[str, list[MapEntry]] = defaultdict(list)
     syn_id     = count(SYNTHETIC_ID_START)
 
     for entry_elem in root.iter('entry'):
-        seq    = int(entry_elem.find('ent_seq').text)
+        seq    = int(required_text(entry_elem, 'ent_seq'))
         k_eles = entry_elem.findall('k_ele')
         r_eles = entry_elem.findall('r_ele')
 
         # (keb, frozenset of ke_inf flags)
         k_data = [
-            (k.find('keb').text,
+            (required_text(k, 'keb'),
              frozenset(e.text.strip('&;') for e in k.findall('ke_inf') if e.text))
             for k in k_eles
         ]
 
         # (reb, no_kanji_bool, restr_list, frozenset of re_inf flags)
         r_data = [
-            (r.find('reb').text,
+            (required_text(r, 'reb'),
              r.find('re_nokanji') is not None,
              [e.text for e in r.findall('re_restr') if e.text],
              frozenset(e.text.strip('&;') for e in r.findall('re_inf') if e.text))
@@ -225,7 +361,7 @@ def build_jmdict_data(root, freq_map: dict):
         all_uk = bool(senses) and all('uk' in s['tags'] for s in senses)
 
         # Build all valid (keb_or_None, k_flags, reb, r_flags, is_restr_pair) tuples.
-        form_pairs = []
+        form_pairs: list[FormPair] = []
         if not k_data:
             for reb, _, _, r_flags in r_data:
                 if 'ok' in r_flags:
@@ -246,10 +382,10 @@ def build_jmdict_data(root, freq_map: dict):
                         form_pairs.append((keb, k_flags, reb, r_flags, False))
 
         # Group by applicable sense subset (stagk/stagr resolution)
-        sense_groups: dict[tuple, list] = defaultdict(list)
+        sense_groups: defaultdict[SenseGroup, list[FormPair]] = defaultdict(list)
         for pair in form_pairs:
-            keb, _, reb, _, _ = pair
-            sense_indices = _applicable_sense_indices(senses, keb, reb)
+            pair_keb, _, reb, _, _ = pair
+            sense_indices = _applicable_sense_indices(senses, pair_keb, reb)
             if sense_indices:
                 sense_groups[sense_indices].append(pair)
 
@@ -272,40 +408,45 @@ def build_jmdict_data(root, freq_map: dict):
                 for i in sense_indices_of_sense_group
             ]
 
-            seen_lookup: set = set()
+            seen_lookup: set[tuple[str, str | None, str | None, int]] = set()
 
             # ── kanji entries: one per surface keb ───────────────────────────
-            for keb, k_flags, reb, r_flags, _ in form_pairs_of_sense_group:
-                if keb is None:
+            for pair_keb, k_flags, reb, r_flags, _ in form_pairs_of_sense_group:
+                if pair_keb is None:
                     continue
                 display_reb = canonical_reb if 'sk' in r_flags else reb
                 if canonical_keb is None:
                     written_form = canonical_reb
                     reading = None
                 else:
-                    written_form = canonical_keb if 'sK' in k_flags else keb
+                    written_form = canonical_keb if 'sK' in k_flags else pair_keb
                     reading = display_reb
 
-                dedup = (keb, written_form, reading, entry_id)
+                dedup = (pair_keb, written_form, reading, entry_id)
                 if dedup not in seen_lookup:
                     seen_lookup.add(dedup)
-                    freq = freq_map.get((keb, display_reb), DEFAULT_FREQ)
-                    lookup_map[keb].append((written_form, reading, freq, entry_id))
+                    freq = freq_map.get((pair_keb, display_reb), DEFAULT_FREQ)
+                    lookup_map[pair_keb].append((written_form, reading, freq, entry_id))
 
             # ── kana entries: one per surface reb ────────────────────────────
-            seen_rebs: set = set()
-            for keb, k_flags, reb, r_flags, is_restr in form_pairs_of_sense_group:
+            seen_rebs: set[str] = set()
+            for pair_keb, k_flags, reb, r_flags, is_restr in form_pairs_of_sense_group:
                 if reb in seen_rebs:
                     continue
                 seen_rebs.add(reb)
 
                 display_reb = canonical_reb if 'sk' in r_flags else reb
-                display_keb = canonical_keb if (keb is not None and 'sK' in k_flags) else keb
+                display_keb = (
+                    canonical_keb
+                    if pair_keb is not None and 'sK' in k_flags
+                    else pair_keb
+                )
 
-                if all_uk or keb is None or canonical_keb is None:
+                if all_uk or pair_keb is None or canonical_keb is None:
                     written_form = display_reb
                     reading = None
                 elif is_restr:
+                    assert display_keb is not None
                     written_form = display_keb
                     reading = display_reb
                 else:
@@ -325,8 +466,12 @@ def build_jmdict_data(root, freq_map: dict):
 
 # ── Kanjidic + IDS ─────────────────────────────────────────────────────────────
 
-def build_kanjidic_data(kanjidic_gz: bytes, ids_text: str,
-                        jmdict_root, freq_map: dict) -> dict:
+def build_kanjidic_data(
+    kanjidic_gz: bytes,
+    ids_text: str,
+    jmdict_root: XmlElement,
+    freq_map: FreqMap,
+) -> dict[str, KanjiEntry]:
     """
     Build kanji_entries from kanjidic2 + CHISE IDS + JMdict example data.
     Returns {character: {character, meanings, readings, components, examples}}.
@@ -336,9 +481,9 @@ def build_kanjidic_data(kanjidic_gz: bytes, ids_text: str,
         if word not in word_freq or rank < word_freq[word]:
             word_freq[word] = rank
 
-    word_to_readings:    dict[str, list] = defaultdict(list)
-    word_to_jmdict_info: dict[str, dict] = {}
-    kanji_to_words:      dict[str, list] = defaultdict(list)
+    word_to_readings: defaultdict[str, list[tuple[str, bool]]] = defaultdict(list)
+    word_to_jmdict_info: dict[str, JmdictInfo] = {}
+    kanji_to_words: defaultdict[str, list[str]] = defaultdict(list)
 
     for entry_elem in jmdict_root.iter('entry'):
         k_nodes = entry_elem.findall('k_ele')
@@ -348,12 +493,16 @@ def build_kanjidic_data(kanjidic_gz: bytes, ids_text: str,
         all_tags    = ([t.text for t in entry_elem.findall('.//ke_pri')] +
                        [t.text for t in entry_elem.findall('.//re_pri')])
         is_priority = any(t in PRIORITY_TAGS for t in all_tags if t)
-        display_reb = r_nodes[0].find('reb').text
+        display_reb = required_text(r_nodes[0], 'reb')
         gloss_node  = entry_elem.find('.//sense/gloss')
-        display_m   = gloss_node.text if gloss_node is not None else ''
-        entry_readings = [kata_to_hira(r.find('reb').text) for r in r_nodes]
+        display_m = (
+            gloss_node.text
+            if gloss_node is not None and gloss_node.text is not None
+            else ''
+        )
+        entry_readings = [kata_to_hira(required_text(r, 'reb')) for r in r_nodes]
         for k_node in k_nodes:
-            word = k_node.find('keb').text
+            word = required_text(k_node, 'keb')
             if word not in word_freq:
                 continue
             for r in entry_readings:
@@ -364,7 +513,7 @@ def build_kanjidic_data(kanjidic_gz: bytes, ids_text: str,
                     kanji_to_words[char].append(word)
 
     # Parse CHISE IDS
-    ids_map: dict[str, list] = {}
+    ids_map: dict[str, list[str]] = {}
     for line in ids_text.splitlines():
         if not line or line.startswith(';'):
             continue
@@ -378,7 +527,7 @@ def build_kanjidic_data(kanjidic_gz: bytes, ids_text: str,
                 best_seq = p
                 break
         clean = re.sub(r'\[.*?\]|&[^;]+;|[\u2FF0-\u2FFB]', '', best_seq)
-        components = []
+        components: list[str] = []
         for char in clean:
             if char == kanji or char in components:
                 continue
@@ -389,40 +538,46 @@ def build_kanjidic_data(kanjidic_gz: bytes, ids_text: str,
                 components.append(char)
         ids_map[kanji] = components
 
-    # Parse kanjidic2
-    with gzip.open(io.BytesIO(kanjidic_gz), 'rb') as f:
-        kd_root = StdET.parse(f).getroot()
+    # Parse kanjidic2 with the same XML implementation as JMdict.
+    kd_root = etree.parse(io.BytesIO(gzip.decompress(kanjidic_gz))).getroot()
 
     meaning_lookup: dict[str, str] = {}
     for char_elem in kd_root.findall('character'):
-        literal = char_elem.find('literal').text
+        literal_node = char_elem.find('literal')
+        assert literal_node is not None and literal_node.text is not None
+        literal = literal_node.text
         m_node  = char_elem.find('.//rmgroup/meaning')
         if m_node is not None and m_node.get('m_lang') is None and m_node.text:
             meaning_lookup[literal] = re.sub(r'\s*\(.*?\)', '', m_node.text).strip()
 
-    kanji_entries = {}
+    kanji_entries: dict[str, KanjiEntry] = {}
     for char_elem in kd_root.findall('character'):
-        literal  = char_elem.find('literal').text
+        literal_node = char_elem.find('literal')
+        assert literal_node is not None and literal_node.text is not None
+        literal = literal_node.text
         meanings = [m.text for m in char_elem.findall('.//rmgroup/meaning')
-                    if m.get('m_lang') is None]
+                    if m.get('m_lang') is None and m.text is not None]
         if not meanings:
             continue
 
         raw_readings = char_elem.findall('.//rmgroup/reading')
-        reading_attribs: dict = defaultdict(lambda: {'type': None, 'is_stem': False, 'is_full': False})
-        for r in raw_readings:
-            text       = r.text.replace('-', '')
-            stem, full = text.split('.')[0], text.replace('.', '')
+        reading_attribs: defaultdict[str, ReadingAttributes] = defaultdict(
+            lambda: {'type': None, 'is_stem': False, 'is_full': False}
+        )
+        for raw_reading in raw_readings:
+            assert raw_reading.text is not None
+            reading_text = raw_reading.text.replace('-', '')
+            stem, full = reading_text.split('.')[0], reading_text.replace('.', '')
             h_stem, h_full = kata_to_hira(stem), kata_to_hira(full)
-            if r.get('r_type') == 'ja_on':
+            if raw_reading.get('r_type') == 'ja_on':
                 reading_attribs[h_full].update({'type': 'on', 'is_full': True})
             else:
                 reading_attribs[h_stem].update({'type': 'kun', 'is_stem': True})
                 reading_attribs[h_full].update({'type': 'kun', 'is_full': True})
 
-        total_score      = Counter()
-        standalone_score = Counter()
-        reading_to_words: dict[str, list] = defaultdict(list)
+        total_score: defaultdict[str, float] = defaultdict(float)
+        standalone_score: defaultdict[str, float] = defaultdict(float)
+        reading_to_words: defaultdict[str, list[WordExample]] = defaultdict(list)
 
         for word in set(kanji_to_words.get(literal, [])):
             rank        = word_freq.get(word, 500_000)
@@ -433,8 +588,8 @@ def build_kanjidic_data(kanjidic_gz: bytes, ids_text: str,
                 r_chars = list(word_reading)
                 while (w_chars and r_chars and
                        is_hiragana(w_chars[-1]) and w_chars[-1] == r_chars[-1]):
-                    w_chars.pop()
-                    r_chars.pop()
+                    _ = w_chars.pop()
+                    _ = r_chars.pop()
                 extracted = ''.join(r_chars)
                 for base_r, attr in reading_attribs.items():
                     is_cand = (
@@ -464,10 +619,10 @@ def build_kanjidic_data(kanjidic_gz: bytes, ids_text: str,
         if not ranked_stems:
             continue
 
-        final_examples: list = []
-        used_words: set = set()
+        final_examples: list[DisplayExample] = []
+        used_words: set[str] = set()
 
-        def add_ex(stem_idx: int, word_idx: int):
+        def add_ex(stem_idx: int, word_idx: int) -> None:
             if stem_idx >= len(ranked_stems):
                 return
             stem  = ranked_stems[stem_idx]
@@ -485,10 +640,12 @@ def build_kanjidic_data(kanjidic_gz: bytes, ids_text: str,
             hira_to_kata(r) if reading_attribs[r]['type'] == 'on' else r
             for r in ranked_stems
         ]
-        comp_list = [
-            {'c': c, **({'m': meaning_lookup[c]} if c in meaning_lookup else {})}
-            for c in ids_map.get(literal, [])
-        ]
+        comp_list: list[KanjiComponent] = []
+        for component_char in ids_map.get(literal, []):
+            component: KanjiComponent = {'c': component_char}
+            if component_char in meaning_lookup:
+                component['m'] = meaning_lookup[component_char]
+            comp_list.append(component)
         kanji_entries[literal] = {
             'character':  literal,
             'meanings':   meanings,
@@ -503,7 +660,7 @@ def build_kanjidic_data(kanjidic_gz: bytes, ids_text: str,
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def main():
+def main() -> None:
     ensure_dirs()
 
     print("\n[1/5] Loading source files ...")
@@ -516,8 +673,7 @@ def main():
     if not os.path.exists(DECONJUGATOR_PATH):
         print(f"ERROR: {DECONJUGATOR_PATH} not found.", file=sys.stderr)
         sys.exit(1)
-    with open(DECONJUGATOR_PATH, 'r', encoding='utf-8') as f:
-        deconjugator_rules = [r for r in json.load(f) if isinstance(r, dict)]
+    deconjugator_rules = load_deconjugator_rules(DECONJUGATOR_PATH)
     print(f"  {len(deconjugator_rules)} deconjugator rules loaded")
 
     print("\n[2/5] Parsing frequency list ...")
@@ -536,14 +692,14 @@ def main():
 
     print(f"\n[5/5] Saving dictionary to {OUTPUT_PATH} ...")
     t0 = time.time()
-    payload = {
+    payload: DictionaryPayload = {
         'entries':            entries,
         'lookup_map':         dict(lookup_map),
         'kanji_entries':      kanji_entries,
         'deconjugator_rules': deconjugator_rules,
     }
     with open(OUTPUT_PATH, 'wb') as f:
-        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        cbor2.dump(payload, f)
     size_mb = os.path.getsize(OUTPUT_PATH) / 1_048_576
     print(f"  Saved {size_mb:.1f} MB in {time.time() - t0:.1f}s")
     print("\nBuild complete.")

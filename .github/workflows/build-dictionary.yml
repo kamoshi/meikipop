@@ -15,23 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: set up python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
+      - name: set up uv
+        uses: astral-sh/setup-uv@v5
 
       - name: build dictionary
-        run: python -m meikipop.scripts.build_dictionary
+        run: uv run scripts/build_dictionary.py
 
       - name: compress dictionary
         run: |
-          mv /home/runner/.local/share/meikipop/dictionary.pkl .
-          zip dictionary.zip dictionary.pkl
+          mv /home/runner/.local/share/meikipop/dictionary.cbor .
+          zip dictionary.zip dictionary.cbor
 
       - name: update dictionary-latest release
         env:
