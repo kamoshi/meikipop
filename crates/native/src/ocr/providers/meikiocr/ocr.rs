@@ -8,7 +8,7 @@ use fast_image_resize::{FilterType, IntoImageView, ResizeAlg, ResizeOptions, Res
 use hf_hub::{HFClientSync, split_id};
 use image::{GenericImageView, Rgb, RgbImage};
 use ndarray::{Array2, Array3, Array4, Axis, Ix2, Ix3, s};
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
 use ort::ep::{self, ExecutionProvider};
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::value::Tensor;
@@ -143,21 +143,21 @@ fn create_session(path: &PathBuf, use_cuda: bool) -> MeikiResult<Session> {
         .with_intra_op_spinning(false)?
         .with_inter_op_spinning(false)?;
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
     let builder = if use_cuda {
         builder.with_execution_providers([ep::CUDA::default().build().error_on_failure()])?
     } else {
         builder
     };
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(not(all(feature = "cuda", any(target_os = "linux", target_os = "windows"))))]
     debug_assert!(!use_cuda, "CUDA is not supported on this platform");
 
     let mut builder = builder;
     Ok(builder.commit_from_file(path)?)
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
 fn cuda_is_available() -> bool {
     match ep::CUDA::default().is_available() {
         Ok(available) => available,
@@ -168,7 +168,7 @@ fn cuda_is_available() -> bool {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(all(feature = "cuda", any(target_os = "linux", target_os = "windows"))))]
 fn cuda_is_available() -> bool {
     false
 }

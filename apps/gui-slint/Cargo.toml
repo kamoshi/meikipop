@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+default = []
+cuda = ["meikipop-native/cuda"]
+
 [dependencies]
 fontdb = "0.23"
 futures-util = "0.3"
@@ -24,7 +28,7 @@ raw-window-handle = "0.6"
 slint = { version = "=1.17.0", default-features = false, features = [
     "backend-winit-x11",
     "raw-window-handle-06",
-    "renderer-skia",
+    "renderer-femtovg",
 ] }
 x11rb = "0.13"
 

@@ -50,7 +50,7 @@ run-slint:
 ifeq ($(HOST_OS),Linux)
 ifeq ($(HOST_ARCH),x86_64)
 run-slint-cuda:
-	nix develop .#cuda -c cargo run --release --manifest-path $(SLINT_MANIFEST)
+	nix develop .#cuda -c cargo run --release --features cuda --manifest-path $(SLINT_MANIFEST)
 else
 run-slint-cuda:
 	@echo "CUDA is only supported by the optional x86_64 Linux development shell."

@@ -21,9 +21,16 @@ pub fn setup_tray(
     });
     let controller_for_settings = Rc::clone(&controller);
     tray.on_show_settings(move || {
+        tracing::debug!("Settings menu item selected");
         if let Some(settings) = settings.upgrade() {
             crate::setup_settings::load_draft(&settings, &controller_for_settings.current());
-            let _ = settings.show();
+            if let Err(error) = settings.show() {
+                tracing::error!(%error, "Could not show the Settings window");
+            } else {
+                tracing::debug!("Requested Settings window to be shown");
+            }
+        } else {
+            tracing::error!("Settings window is no longer available");
         }
     });
 

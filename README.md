@@ -36,10 +36,18 @@ locally with MeikiOCR or, in theory, use Apple's Vision framework.
 
 ## Installation
 
-For now the easiest and recommended way to install, build and run this software
-is to use Nix and the provided `flake.nix` which contains everything required to
-make it work. You can also use `make` for some commands used to build it via
-`nix`, consult an AI in case of confusion.
+For now the easiest and recommended way to build and run this software is Nix:
+
+```sh
+nix run
+```
+
+The flake currently supports x86_64 Linux and Apple Silicon macOS. `nix run`
+builds and runs the native package for the current platform. To build without
+running it, use `nix build`; the result is linked at `./result`. The explicit
+package names are `packages.x86_64-linux.default` and
+`packages.aarch64-darwin.default`. You can also use `make` for the development
+commands built on top of Nix.
 
 
 ## License
