@@ -1,7 +1,7 @@
 {
   description = "MeikiPop development environment and runnable application";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
   inputs.nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
@@ -32,10 +32,10 @@
         pkgs.libxkbcommon
         pkgs.pipewire
         pkgs.wayland
-        pkgs.xorg.libX11
-        pkgs.xorg.libXcursor
-        pkgs.xorg.libXi
-        pkgs.xorg.libxcb
+        pkgs.libx11
+        pkgs.libxcursor
+        pkgs.libxi
+        pkgs.libxcb
       ];
 
       linuxDevelopmentPackages = pkgs: [
@@ -47,10 +47,10 @@
         pkgs.noto-fonts-cjk-sans
         pkgs.libxkbcommon.dev
         pkgs.wayland.dev
-        pkgs.xorg.libX11.dev
-        pkgs.xorg.libXcursor.dev
-        pkgs.xorg.libXi.dev
-        pkgs.xorg.libxcb.dev
+        pkgs.libx11.dev
+        pkgs.libxcursor.dev
+        pkgs.libxi.dev
+        pkgs.libxcb.dev
       ];
 
       mkDarwinToolchain =

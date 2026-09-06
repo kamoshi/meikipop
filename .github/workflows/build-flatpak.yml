@@ -1,0 +1,60 @@
+# .github/workflows/build-flatpak.yml
+name: flatpak build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-flatpak:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: build flatpak
+        uses: flatpak/flatpak-github-actions/flatpak-builder@0fadf5d65cdfbdb9c94c7a2f3637c41206cc1a70 # v6
+        with:
+          bundle: meikipop.flatpak
+          manifest-path: flatpak/org.kamoshi.meikipop.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+          upload-artifact: false
+
+      - name: upload flatpak artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: meikipop-flatpak-x86_64
+          path: meikipop.flatpak
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-flatpak
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: download flatpak artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: meikipop-flatpak-x86_64
+
+      - name: create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" meikipop.flatpak --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" meikipop.flatpak \
+              --verify-tag \
+              --title "MeikiPop $GITHUB_REF_NAME" \
+              --generate-notes
+          fi

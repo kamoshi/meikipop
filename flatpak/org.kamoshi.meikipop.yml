@@ -50,7 +50,6 @@ modules:
     build-commands:
       - cargo build --offline --release --manifest-path apps/gui-slint/Cargo.toml
       - install -Dm755 apps/gui-slint/target/release/meikipop-gui /app/bin/meikipop-gui
-      - ln -s /usr/bin/python3 /app/bin/python
       - install -Dm644 flatpak/org.kamoshi.meikipop.desktop /app/share/applications/org.kamoshi.meikipop.desktop
       - install -Dm644 flatpak/org.kamoshi.meikipop.metainfo.xml /app/share/metainfo/org.kamoshi.meikipop.metainfo.xml
       - install -d /app/share/icons/hicolor/256x256/apps
