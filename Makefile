@@ -24,7 +24,7 @@ PLATFORM_BUILD_TARGETS :=
 PLATFORM_CHECK_TARGETS :=
 endif
 
-.PHONY: help run run-slint run-slint-cuda run-swift flatpak build build-native build-native-ffi build-slint \
+.PHONY: help run run-slint run-slint-cuda run-swift flatpak dmg build build-native build-native-ffi build-slint \
 	build-swift check check-native check-native-ffi check-slint check-swift test \
 	test-native test-native-ffi
 
@@ -36,6 +36,7 @@ help:
 	@echo "  make run-slint-cuda Run the Slint frontend with the optional CUDA runtime (x86_64 Linux)"
 	@echo "  make run-swift      Run the Swift frontend (macOS only)"
 	@echo "  make flatpak        Build and reinstall the local Flatpak (x86_64 Linux)"
+	@echo "  make dmg            Build the complete macOS DMG distributable (Apple Silicon)"
 	@echo "  make build          Build all frontends supported on this OS"
 	@echo "  make check          Check all frontends supported on this OS"
 	@echo "  make test           Run the native test suite"
@@ -59,6 +60,15 @@ endif
 else
 flatpak:
 	@echo "The Flatpak build currently supports x86_64 Linux only."
+	@false
+endif
+
+ifeq ($(HOST_OS),Darwin)
+dmg:
+	nix run .#build-dmg
+else
+dmg:
+	@echo "The DMG distributable can only be built on macOS."
 	@false
 endif
 

@@ -18,8 +18,25 @@
       ];
       flatpakAppId = "org.kamoshi.meikipop";
       flatpakRuntimeVersion = "25.08";
+      appName = "MeikiPop";
+      appVersion = "0.1.0";
+      bundleId = "org.kamoshi.meikipop";
+      bundleVersion = "1";
+      minimumMacOSVersion = "14.0";
 
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+
+      # Keep the expensive Rust derivation independent from documentation,
+      # CI, Swift, Flatpak, and macOS packaging changes.
+      applicationSource = nixpkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = nixpkgs.lib.fileset.unions [
+          ./apps/gui-slint
+          ./crates/native
+          ./resources
+          ./scripts/deconjugator.json
+        ];
+      };
 
       packageSetsFor = system: {
         pkgs = import nixpkgs { inherit system; };
@@ -147,8 +164,8 @@
         in
         unstablePkgs.rustPlatform.buildRustPackage {
           pname = "meikipop";
-          version = "0.1.0";
-          src = self;
+          version = appVersion;
+          src = applicationSource;
 
           cargoRoot = "apps/gui-slint";
           buildAndTestSubdir = "apps/gui-slint";
@@ -159,10 +176,12 @@
 
           nativeBuildInputs = [
             pkgs.pkg-config
-            pkgs.makeWrapper
             unstablePkgs.rustPlatform.bindgenHook
           ]
-          ++ pkgs.lib.optionals isLinux [ pkgs.addDriverRunpath ]
+          ++ pkgs.lib.optionals isLinux [
+            pkgs.addDriverRunpath
+            pkgs.makeWrapper
+          ]
           ++ pkgs.lib.optionals isDarwin darwinToolchain.packages;
 
           buildInputs = [
@@ -175,19 +194,12 @@
             ORT_PREFER_DYNAMIC_LINK = "1";
           } // pkgs.lib.optionalAttrs isDarwin darwinToolchain.environment;
 
-          postFixup =
-            if isLinux then
-              ''
-                addDriverRunpath "$out/bin/meikipop-gui"
-                wrapProgram "$out/bin/meikipop-gui" \
-                  --prefix PATH : "${unstablePkgs.python3}/bin" \
-                  --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeLibraries}"
-              ''
-            else
-              ''
-                wrapProgram "$out/bin/meikipop-gui" \
-                  --prefix PATH : "${unstablePkgs.python3}/bin"
-              '';
+          postFixup = pkgs.lib.optionalString isLinux ''
+            addDriverRunpath "$out/bin/meikipop-gui"
+            wrapProgram "$out/bin/meikipop-gui" \
+              --prefix PATH : "${unstablePkgs.python3}/bin" \
+              --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeLibraries}"
+          '';
 
           meta = {
             description = "Screen OCR and dictionary popup";
@@ -255,6 +267,164 @@
             echo "  Run: meikipop"
             echo "  Native library: $PWD/crates/native"
             echo "  Rust GUI: cargo run --manifest-path apps/gui-slint/Cargo.toml"
+          '';
+        };
+
+      mkDarwinApp =
+        system:
+        let
+          packageSets = packageSetsFor system;
+          inherit (packageSets) pkgs;
+          meikipop = mkPackage system;
+          infoPlist = pkgs.writeText "MeikiPop-Info.plist" ''
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+              <key>CFBundleDevelopmentRegion</key><string>en</string>
+              <key>CFBundleExecutable</key><string>MeikiPop</string>
+              <key>CFBundleIconFile</key><string>MeikiPop</string>
+              <key>CFBundleIdentifier</key><string>${bundleId}</string>
+              <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+              <key>CFBundleName</key><string>${appName}</string>
+              <key>CFBundlePackageType</key><string>APPL</string>
+              <key>CFBundleShortVersionString</key><string>${appVersion}</string>
+              <key>CFBundleVersion</key><string>${bundleVersion}</string>
+              <key>LSMinimumSystemVersion</key><string>${minimumMacOSVersion}</string>
+              <key>NSHighResolutionCapable</key><true/>
+              <key>NSScreenCaptureUsageDescription</key>
+              <string>MeikiPop captures the selected screen or window to recognize Japanese text.</string>
+            </dict>
+            </plist>
+          '';
+        in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "meikipop-app";
+          version = appVersion;
+
+          dontUnpack = true;
+
+          nativeBuildInputs = [
+            pkgs.darwin.autoSignDarwinBinariesHook
+            pkgs.darwin.sigtool
+            pkgs.imagemagick
+            pkgs.libicns
+            pkgs.macdylibbundler
+          ];
+
+          installPhase = ''
+            runHook preInstall
+
+            app="$out/Applications/MeikiPop.app"
+            mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks" "$app/Contents/Resources"
+
+            cp "${meikipop}/bin/meikipop-gui" "$app/Contents/MacOS/MeikiPop"
+            chmod +x "$app/Contents/MacOS/MeikiPop"
+
+            dylibbundler \
+              -od \
+              -b \
+              -ns \
+              -x "$app/Contents/MacOS/MeikiPop" \
+              -d "$app/Contents/Frameworks" \
+              -p '@executable_path/../Frameworks/'
+
+            # Remove build-machine search paths after dylibbundler has changed
+            # every non-system dependency to @executable_path.
+            find "$app/Contents/MacOS" "$app/Contents/Frameworks" -type f -print0 \
+              | while IFS= read -r -d $'\0' binary; do
+                  otool -l "$binary" 2>/dev/null \
+                    | awk '/cmd LC_RPATH/ { getline; getline; print $2 }' \
+                    | grep '^/nix/store/' \
+                    | while IFS= read -r rpath; do
+                        install_name_tool -delete_rpath "$rpath" "$binary"
+                      done || true
+                done
+
+            # Start with the largest frame. Frame zero is only 16x16 and looks
+            # visibly blurred when expanded to Finder's larger icon sizes.
+            for size in 16 32 48 128 256 512; do
+              magick "${./resources/icon.ico}[8]" \
+                -resize "''${size}x''${size}" "/tmp/meikipop-''${size}.png"
+            done
+            png2icns "$app/Contents/Resources/MeikiPop.icns" \
+              /tmp/meikipop-{16,32,48,128,256,512}.png
+
+            cp "${infoPlist}" "$app/Contents/Info.plist"
+
+            # Fail the build if a newly introduced library escapes relocation.
+            find "$app/Contents/MacOS" "$app/Contents/Frameworks" -type f -print0 \
+              | while IFS= read -r -d $'\0' binary; do
+                  if otool -L "$binary" 2>/dev/null \
+                    | tail -n +2 \
+                    | grep -q '/nix/store/'; then
+                    echo "Unbundled Nix dependency in $binary:" >&2
+                    otool -L "$binary" >&2
+                    exit 1
+                  fi
+                done
+
+            runHook postInstall
+          '';
+
+          meta = {
+            description = "Portable unsigned MeikiPop macOS application bundle";
+            platforms = [ "aarch64-darwin" ];
+          };
+        };
+
+      mkDarwinDmgBuilder =
+        system:
+        let
+          packageSets = packageSetsFor system;
+          inherit (packageSets) pkgs;
+          app = mkDarwinApp system;
+        in
+        pkgs.writeShellApplication {
+          name = "build-meikipop-dmg";
+          runtimeInputs = [ pkgs.coreutils ];
+          text = ''
+            if [ "$(uname -s)" != Darwin ]; then
+              echo "The MeikiPop DMG can only be created on macOS." >&2
+              exit 1
+            fi
+
+            mkdir -p dist
+            work_dir="$(mktemp -d)"
+            trap 'rm -rf "$work_dir"' EXIT
+            payload_dir="$work_dir/payload"
+            mkdir "$payload_dir"
+            staged_app="$payload_dir/${appName}.app"
+            staged_dmg="$work_dir/${appName}-aarch64.dmg"
+
+            # Apple recommends ditto for copying bundles because it preserves
+            # metadata, symlinks, resource forks, and extended attributes.
+            /usr/bin/ditto "${app}/Applications/${appName}.app" "$staged_app"
+            chmod -R u+w "$staged_app"
+
+            # Relocated nested Mach-O files were ad-hoc signed by the Nix
+            # derivation. Sign the outer bundle last to create its resource
+            # seal. This uses no identity, certificate, or Apple account.
+            /usr/bin/codesign \
+              --force \
+              --identifier "${bundleId}" \
+              --sign - \
+              "$staged_app"
+            /usr/bin/codesign --verify --deep --strict "$staged_app"
+            /usr/bin/plutil -lint "$staged_app/Contents/Info.plist" >/dev/null
+
+            ln -s /Applications "$payload_dir/Applications"
+
+            /usr/bin/hdiutil create \
+              -volname "${appName}" \
+              -srcfolder "$payload_dir" \
+              -format UDZO \
+              "$staged_dmg"
+
+            /usr/bin/hdiutil verify "$staged_dmg" >/dev/null
+            mv -f "$staged_dmg" "dist/${appName}-aarch64.dmg"
+
+            echo "Created dist/${appName}-aarch64.dmg"
           '';
         };
 
@@ -341,9 +511,15 @@
         };
     in
     {
-      packages = forAllSystems (system: {
-        default = mkPackage system;
-      });
+      packages = forAllSystems (
+        system:
+        {
+          default = mkPackage system;
+        }
+        // nixpkgs.lib.optionalAttrs (system == "aarch64-darwin") {
+          macos-app = mkDarwinApp system;
+        }
+      );
 
       apps = forAllSystems (
         system:
@@ -371,6 +547,13 @@
             };
           }
         )
+        // nixpkgs.lib.optionalAttrs (system == "aarch64-darwin") {
+          build-dmg = {
+            type = "app";
+            program = "${mkDarwinDmgBuilder system}/bin/build-meikipop-dmg";
+            meta.description = "Build a portable unsigned MeikiPop DMG";
+          };
+        }
       );
 
       devShells = forAllSystems (

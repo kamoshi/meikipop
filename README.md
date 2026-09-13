@@ -69,6 +69,26 @@ flatpak run org.kamoshi.meikipop
 The generated bundle is `dist/meikipop.flatpak`. Regenerate the offline Cargo
 source list whenever `apps/gui-slint/Cargo.lock` changes.
 
+### DMG (macOS)
+
+On Apple Silicon macOS, build the portable application and disk image with:
+
+```sh
+make dmg
+```
+
+This delegates to `nix run .#build-dmg`.
+
+The disk image is written to `dist/MeikiPop-aarch64.dmg`. Non-system dynamic
+libraries are included in the application, so recipients do not need Nix. For
+packaging inspection, `nix build .#macos-app` exposes the intermediate bundle
+at `result/Applications/MeikiPop.app`.
+
+This development DMG uses only ad-hoc Mach-O signatures. It is not signed with
+an Apple Developer ID and is not notarized, so Gatekeeper will warn recipients
+when they first open it. The builder validates the app's resource seal, nested
+code signatures, relocated dynamic libraries, property list, and DMG checksum.
+
 
 ## License
 
